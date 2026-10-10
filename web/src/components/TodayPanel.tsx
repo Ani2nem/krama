@@ -84,6 +84,7 @@ export function TodayPanel({
     date: string;
     day: string;
     spans: [string, string][];
+    extended: string;
   } | null>(null);
   const [outFrom, setOutFrom] = useState("08:00");
   const [outTo, setOutTo] = useState("10:00");
@@ -274,6 +275,7 @@ export function TodayPanel({
                             date: d.date,
                             day: d.day,
                             spans: d.out_spans,
+                            extended: d.extended,
                           })
                         }
                       >
@@ -330,6 +332,7 @@ export function TodayPanel({
                             date: d.date,
                             day: d.day,
                             spans: d.out_spans,
+                            extended: "",
                           })
                         }
                       >
@@ -402,6 +405,23 @@ export function TodayPanel({
                 back {span[0]} - {span[1]} {"\u21BA"}
               </button>
             ))}
+            {picked.extended && (
+              <button
+                className="rota__withdraw"
+                disabled={busy}
+                title={`${picked.name} said yes to staying late but can't any more - takes the agreement back; anything it was holding up will show as broken, visibly`}
+                onClick={() => {
+                  setPicked(null);
+                  void record({
+                    kind: "extension-withdrawn",
+                    target: picked.id,
+                    window_start: `${picked.date}T00:00`,
+                  });
+                }}
+              >
+                won't stay late after all
+              </button>
+            )}
             <button className="rota__editorclose" onClick={() => setPicked(null)}>
               Done
             </button>

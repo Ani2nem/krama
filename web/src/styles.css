@@ -1401,8 +1401,39 @@ button.link:hover:not(:disabled) { color: #6fd6e8; }
   border-radius: 10px;
   font-size: 13px;
 }
-.rota__editor button { font-size: 12px; padding: 4px 10px; }
-.rota__hours { display: inline-flex; align-items: center; gap: 6px; }
-.rota__hours input { font-size: 12px; padding: 2px 4px; }
-.rota__spanback { background: #fff; }
+/* Every control in the editor states its own colors: the first version let the
+   app's dark-button defaults leak in - black time pickers on the pastel card and
+   a restore button whose white text vanished on its white fill. */
+.rota__editor button {
+  font-size: 12px;
+  padding: 5px 12px;
+  white-space: nowrap;
+  background: #fff;
+  color: #2a2a35;
+  border: 1px solid #d5d5e0;
+  border-radius: 8px;
+}
+.rota__editor button:hover:not(:disabled) { background: #f0f0f6; }
+.rota__editor button:disabled { opacity: 0.45; }
+.rota__hours { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.rota__hours input {
+  font-size: 13px;
+  padding: 3px 6px;
+  background: #fff;
+  color: #2a2a35;
+  border: 1px solid #d5d5e0;
+  border-radius: 8px;
+  /* the native picker follows the page's dark scheme unless told otherwise */
+  color-scheme: light;
+}
+.rota__spanback {
+  background: rgb(255 240 214 / 0.9) !important;
+  border-color: #e4c489 !important;
+  color: #7a4c00 !important;
+}
+.rota__withdraw {
+  background: rgb(252 235 233 / 0.9) !important;
+  border-color: #dba9a1 !important;
+  color: #8e2418 !important;
+}
 .rota__editorclose { margin-left: auto; }
