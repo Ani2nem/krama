@@ -74,6 +74,17 @@ export interface WorkerDay {
   extended: string;
   available: boolean;
   actionable: boolean;
+  out_note: string;
+  out_spans: [string, string][];
+}
+
+export interface VanDay {
+  date: string;
+  day: string;
+  available: boolean;
+  actionable: boolean;
+  out_note: string;
+  out_spans: [string, string][];
 }
 
 export interface Worker {
@@ -94,6 +105,7 @@ export interface Van {
   label: string;
   available: boolean;
   stock: Record<string, number>;
+  days: VanDay[];
 }
 
 export interface Job {

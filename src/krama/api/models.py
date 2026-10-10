@@ -118,6 +118,14 @@ class WorkerDayView(Api):
     #: reach is already behind the clock. The board greys these instead of offering
     #: a click that silently does nothing, which is the worst thing a click can do.
     actionable: bool = True
+    #: Hour-scoped absences inside an otherwise working day - "out 8:00 - 10:00 AM".
+    #: A dentist appointment is not a sick day, and showing it as one made the rota
+    #: lie in both directions: the fitter looked gone, and the real two-hour hole
+    #: was invisible. Recorded through the same events the call box writes.
+    out_note: str = ""
+    #: The same holes as machine times, [["08:00", "10:00"], ...], so the cell can
+    #: offer "bring back exactly these hours" without parsing its own label.
+    out_spans: list[list[str]] = []
 
 
 class WorkerView(Api):
@@ -136,11 +144,25 @@ class WorkerView(Api):
     days: list[WorkerDayView] = Field(default_factory=list)
 
 
+class VanDayView(Api):
+    """One van's availability on one rota day - the same grammar as a fitter's."""
+
+    date: str
+    day: str
+    available: bool = True
+    actionable: bool = True
+    out_note: str = ""
+    out_spans: list[list[str]] = []
+
+
 class VanView(Api):
     id: str
     label: str
     available: bool
     stock: dict[str, int]
+    #: The rota week for this van, so a breakdown is a visible, clickable fact on
+    #: the same table as the crew - not something only the solver knows.
+    days: list[VanDayView] = []
 
 
 class JobView(Api):

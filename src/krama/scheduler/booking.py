@@ -326,6 +326,42 @@ def suggest_booking_slots(
             continue
 
         route, stop = placement
+
+        # A yes is for a customer, not a blank cheque. The day-solve honours a
+        # late-stay agreement for the whole day (it must - the job it backs is in
+        # the same solve), so a placement that only works because of someone ELSE'S
+        # extension slips through feasibility. Catch it here: if this draft's stop
+        # runs past a crew member's ordinary reach (shift plus standard overtime)
+        # and that member's extension was not agreed for this caller, the day is
+        # not offered - the dispatcher asks the crew again instead of assuming.
+        borrowed = None
+        stop_end = stop.arrival + timedelta(minutes=wanted.estimated_duration_min)
+        for worker_id in route.worker_ids:
+            member = world.workers.get(worker_id)
+            hours = member.hours_for(on_date.weekday()) if member else None
+            if member is None or hours is None:
+                continue
+            ordinary = datetime.combine(on_date, hours.end, tzinfo=tz)
+            if member.overtime_eligible and params.allow_overtime:
+                ordinary += timedelta(minutes=params.overtime_minutes)
+            if stop_end > ordinary and not world.extension_covers(worker_id, on_date, draft.phone):
+                borrowed = (member.name, world.extension_customer(worker_id, on_date))
+                break
+        if borrowed is not None:
+            name, for_whom = borrowed
+            whose = f" for {for_whom}" if for_whom else ""
+            unavailable.append(
+                UnavailableDay(
+                    on_date=on_date,
+                    reason=UnservedReason.NO_CAPACITY_IN_HORIZON,
+                    detail=(
+                        f"these hours only work because {name} agreed to stay late{whose} - "
+                        "ask the crew again for this job"
+                    ),
+                )
+            )
+            continue
+
         before = route.stops[: list(route.stops).index(stop)]
         previous = candidate_world.jobs.get(before[-1].job_id) if before else None
         from_label = f"{previous.customer_name}'s" if previous else "the shop"

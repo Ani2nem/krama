@@ -177,7 +177,10 @@ def _strip_margins(view: IntakeView, request: Request) -> IntakeView:
         return view
 
     def scrub(slot: SlotView) -> SlotView:
-        return slot.model_copy(update={"margin": 0.0, "margin_pct": 0.0})
+        # The itemised build-up goes too: its labour and materials lines ARE the
+        # rate card, which is owner-gated everywhere else. The total stays - the
+        # dispatcher reads it down the phone, and the customer's invoice says it.
+        return slot.model_copy(update={"margin": 0.0, "margin_pct": 0.0, "quote_lines": []})
 
     return view.model_copy(
         update={
@@ -1324,6 +1327,7 @@ def book_slot(request: BookRequest) -> dict[str, str]:
                 dispatch_id="web",
                 ask_id=ask_id,
                 outcome="booked",
+                job_id=job_id,
             )
             for ask_id, ask in world.crew_asks.items()
             if _digits(ask.phone) and _digits(ask.phone) == _digits(draft.phone)
@@ -1861,6 +1865,10 @@ def extend_for_ask(ask_id: str, worker_id: str = Query(...)) -> dict[str, str]:
                     on_date=ask.on_date,
                     until_time=ask.until_time,
                     reason=f"agreed to {ask.customer_name or 'a customer'}'s hours",
+                    # Scoped: this yes belongs to this ask's customer. It lapses if
+                    # they cancel or are told no, and no other caller may spend it.
+                    ask_id=ask_id,
+                    for_customer=ask.customer_name,
                 )
             ]
         )

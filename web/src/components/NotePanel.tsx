@@ -522,10 +522,15 @@ export function NotePanel({
                       </span>
                     </div>
                   )}
-                  <details className="slot__breakdown">
-                    <summary>how that price is built</summary>
-                    <pre>{slot.quote_lines.join("\n")}</pre>
-                  </details>
+                  {slot.quote_lines.length > 0 && (
+                    /* Owner sessions only: the labour and materials lines ARE the
+                       rate card. A dispatcher quotes the total; the build-up stays
+                       behind the same PIN as the prices it is made of. */
+                    <details className="slot__breakdown">
+                      <summary>how that price is built</summary>
+                      <pre>{slot.quote_lines.join("\n")}</pre>
+                    </details>
+                  )}
                   <div className="slot__why muted">
                     {slot.reason}
                     <br />

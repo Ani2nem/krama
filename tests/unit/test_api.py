@@ -1051,7 +1051,10 @@ def test_the_ask_endpoints_round_trip(client: TestClient):
     assert ask["extended"] == ["Priya"]
     priya = next(w for w in world["workers"] if w["name"] == "Priya")
     monday_cell = next(d for d in priya["days"] if d["date"] == monday.isoformat())
-    assert "agreed to stay" in monday_cell["extended"], "the rota explains the late evening"
+    # Named and scoped: the yes was for Jimmy's evening, and the chip says so -
+    # a bare "agreed to stay" read as standing overtime capacity, which it is not.
+    assert "staying to" in monday_cell["extended"], "the rota explains the late evening"
+    assert "for Jimmy" in monday_cell["extended"], "and names who the yes was for"
 
     client.post(f"/api/asks/{ask_id}/close", params={"outcome": "booked"})
     world = client.get("/api/world").json()
@@ -1932,3 +1935,247 @@ def test_booking_the_caller_resolves_their_crew_ask(client: TestClient, monkeypa
     )
     asks = client.get("/api/world").json()["crew_asks"]
     assert any(a["ask_id"] == other["ask_id"] for a in asks), "Rosa is still owed her call-back"
+
+
+def _open_jimmy_ask(client: TestClient, monday: str) -> str:
+    opened = client.post(
+        "/api/asks",
+        json={
+            "customer_name": "Jimmy",
+            "phone": "8175768492",
+            "transcript": "walmart glass broke, come at 5pm",
+            "on_date": monday,
+            "until": "20:45",
+            "candidate_ids": ["w-marcus", "w-priya"],
+            "detail": "check with Marcus and Priya",
+        },
+    ).json()
+    return str(opened["ask_id"])
+
+
+def _monday_extensions(client: TestClient, monday: str) -> dict[str, str]:
+    world = client.get("/api/world").json()
+    return {
+        w["name"]: next((d["extended"] for d in w["days"] if d["date"] == monday), "")
+        for w in world["workers"]
+        if w["name"] in ("Marcus", "Priya")
+    }
+
+
+def test_a_yes_lapses_when_the_customer_is_told_no(client: TestClient):
+    """The yes was an answer to "can you stay for Jimmy". If Jimmy is told no, the
+    agreement has nothing to back - leaving it standing turned one polite yes into
+    permanent evening capacity any later booking could silently spend."""
+    monday = _next_monday()
+    ask_id = _open_jimmy_ask(client, monday)
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-marcus"})
+    assert "for Jimmy" in _monday_extensions(client, monday)["Marcus"]
+
+    client.post(f"/api/asks/{ask_id}/close", params={"outcome": "resolved"})
+    assert _monday_extensions(client, monday)["Marcus"] == "", "told no, nobody stays late"
+
+
+def test_a_yes_lapses_when_its_booking_cancels(client: TestClient, monkeypatch):
+    """Booking Jimmy consumes the yes; cancelling Jimmy releases it. The fitter
+    agreed to this customer's evening, not to evenings in general."""
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday = _next_monday()
+    ask_id = _open_jimmy_ask(client, monday)
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-marcus"})
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-priya"})
+
+    draft = {
+        "customer_name": "Jimmy",
+        "phone": "8175768492",
+        "address": "walmart haslet",
+        "service_type": "storefront_glass",
+        "duration_minutes": 180,
+        "duration_confidence": 90,
+        "crew_size": 2,
+        "certifications": ["commercial_storefront"],
+        "commitment_cost": 0,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    booked = client.post(
+        "/api/book",
+        json={"draft": draft, "date": monday, "arrival": "17:00"},
+    ).json()
+    assert booked["job_id"]
+    assert "for Jimmy" in _monday_extensions(client, monday)["Marcus"], (
+        "the booking keeps the agreement alive"
+    )
+
+    client.post(f"/api/jobs/{booked['job_id']}/cancel")
+    after = _monday_extensions(client, monday)
+    assert after["Marcus"] == "" and after["Priya"] == "", (
+        "the job is gone, so nobody is staying late for it"
+    )
+
+
+def test_a_yes_cannot_be_spent_on_another_caller(client: TestClient, monkeypatch):
+    """Marcus said yes to JIMMY's evening. A different caller wanting the same
+    evening must be asked-for again, not quietly booked onto Marcus's agreement -
+    we ask the crew, we never assume."""
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+    from datetime import time as _time
+
+    from krama.api.main import service
+    from krama.domain.enums import Certification, ServiceType
+    from krama.domain.models import Job, Location, TimeWindow
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday_iso = _next_monday()
+    monday = _date.fromisoformat(monday_iso)
+    ask_id = _open_jimmy_ask(client, monday_iso)
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-marcus"})
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-priya"})
+
+    svc = service()
+
+    def evening_draft(phone: str, name: str) -> Job:
+        return Job(
+            id="draft",
+            customer_id="c-draft",
+            customer_name=name,
+            phone=phone,
+            location=Location(lat=32.99, lon=-97.36, address="haslet somewhere"),
+            service_type=ServiceType.STOREFRONT_GLASS,
+            required_certifications=frozenset({Certification.COMMERCIAL_STOREFRONT}),
+            crew_size=2,
+            estimated_duration_min=180,
+            revenue=1700.0,
+            windows=(
+                TimeWindow(
+                    start=_datetime.combine(monday, _time(17), tzinfo=svc.tz),
+                    end=_datetime.combine(monday, _time(21), tzinfo=svc.tz),
+                ),
+            ),
+            requested_at=_datetime.combine(monday, _time(7), tzinfo=svc.tz),
+        )
+
+    jimmy = svc.booking_slots(evening_draft("8175768492", "Jimmy"), monday, earliest_hour=17)
+    assert any(s.on_date == monday for s in jimmy.slots), (
+        "the caller the yes belongs to gets the evening"
+    )
+
+    rosa = svc.booking_slots(evening_draft("8170001111", "Rosa"), monday, earliest_hour=17)
+    assert not any(s.on_date == monday for s in rosa.slots), (
+        "someone else's yes is not Rosa's to spend"
+    )
+    refusal = next(u for u in rosa.unavailable if u.on_date == monday)
+    assert "agreed to stay" in refusal.detail and "ask the crew again" in refusal.detail
+
+
+def test_the_price_breakdown_is_the_rate_card_and_stays_with_the_owner():
+    """The itemised build-up (labour rate, materials, call-out) IS the rate card
+    read sideways; a dispatcher session gets the total to read down the phone and
+    nothing to reverse-engineer."""
+    from unittest.mock import Mock
+
+    from krama.api.main import _strip_margins
+    from krama.api.models import DraftView, IntakeView, SlotView
+
+    slot = SlotView(
+        date="2026-10-12",
+        day="Mon 12 Oct",
+        window="5:00 - 7:00 PM",
+        arrival="5:00 PM",
+        marginal_cost=120.0,
+        crew="Marcus + Priya",
+        crew_reason="",
+        reason="",
+        quote_total=1901.95,
+        quote_lines=["call-out  $65.00", "labour 6h  $855.00"],
+        margin=400.0,
+        margin_pct=21.0,
+    )
+    view = IntakeView(
+        bookable=True,
+        missing=[],
+        ask_next=[],
+        draft=DraftView(customer_name="Jimmy"),
+        slots=[slot],
+        flexible_slots=[slot],
+    )
+
+    owner = Mock()
+    owner.headers = {"x-owner-key": "1234"}  # Starlette lower-cases header names
+    dispatcher = Mock()
+    dispatcher.headers = {}
+
+    kept = _strip_margins(view, owner)
+    assert kept.slots[0].quote_lines, "the owner still sees how the price is built"
+
+    stripped = _strip_margins(view, dispatcher)
+    assert stripped.redacted is True
+    for s in (*stripped.slots, *stripped.flexible_slots):
+        assert s.quote_total == 1901.95, "the spoken price survives"
+        assert s.quote_lines == [], "the build-up does not"
+        assert s.margin == 0.0 and s.margin_pct == 0.0
+
+
+def test_an_appointment_is_hours_out_not_a_sick_day(client: TestClient):
+    """Dan at the dentist 8-10 is not Dan gone for the day. The rota cell stays a
+    working day, names the hole, hands back machine times so exactly that hole can
+    be cleared - and a van's breakdown gets the same grammar as a fitter's."""
+    world = client.get("/api/world").json()
+    dan = next(w for w in world["workers"] if w["name"] == "Dan")
+    target = next(d["date"] for d in dan["days"][1:] if d["shift"] != "off")
+
+    client.post(
+        "/api/events",
+        json={
+            "kind": "worker-unavailable",
+            "target": "w-dan",
+            "window_start": f"{target}T08:00",
+            "until": f"{target}T10:00",
+        },
+    )
+    dan = next(w for w in client.get("/api/world").json()["workers"] if w["name"] == "Dan")
+    cell = next(d for d in dan["days"] if d["date"] == target)
+    assert cell["available"] is True, "two hours out is not a day out"
+    assert cell["out_note"] == "out 8:00 - 10:00 AM"
+    assert cell["out_spans"] == [["08:00", "10:00"]]
+
+    # Clearing exactly that hole brings the clean cell back.
+    client.post(
+        "/api/events",
+        json={
+            "kind": "worker-restored",
+            "target": "w-dan",
+            "window_start": f"{target}T08:00",
+            "window_end": f"{target}T10:00",
+        },
+    )
+    dan = next(w for w in client.get("/api/world").json()["workers"] if w["name"] == "Dan")
+    cell = next(d for d in dan["days"] if d["date"] == target)
+    assert cell["out_note"] == "" and cell["out_spans"] == []
+
+    # The van wears the same cells: down for the morning, named and clearable.
+    client.post(
+        "/api/events",
+        json={
+            "kind": "van-unavailable",
+            "target": "van-1",
+            "window_start": f"{target}T06:00",
+            "until": f"{target}T12:00",
+        },
+    )
+    van = next(v for v in client.get("/api/world").json()["vans"] if v["id"] == "van-1")
+    van_cell = next(d for d in van["days"] if d["date"] == target)
+    assert van_cell["available"] is True
+    assert van_cell["out_note"] == "out 6:00 AM - 12:00 PM"
+    client.post(
+        "/api/events",
+        json={
+            "kind": "van-restored",
+            "target": "van-1",
+            "window_start": f"{target}T00:00",
+            "window_end": f"{target}T23:59",
+        },
+    )
+    van = next(v for v in client.get("/api/world").json()["vans"] if v["id"] == "van-1")
+    assert next(d for d in van["days"] if d["date"] == target)["out_note"] == ""
