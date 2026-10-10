@@ -31,6 +31,7 @@ from krama.domain.events import (
     PlanCommitted,
     RateCardChanged,
     ShiftExtended,
+    ShiftExtensionWithdrawn,
     TrafficDelay,
     VanRegistered,
     VanRemoved,
@@ -390,6 +391,12 @@ def _apply(state: WorldState, event: Event) -> None:
                     state.extension_notes[key] = event.for_customer
                 else:
                     state.extension_notes.pop(key, None)
+
+        case ShiftExtensionWithdrawn():
+            key = (event.worker_id, event.on_date)
+            state.shift_extensions.pop(key, None)
+            state.extension_sources.pop(key, None)
+            state.extension_notes.pop(key, None)
 
         case CrewAskOpened():
             state.crew_asks[event.ask_id] = CrewAsk(

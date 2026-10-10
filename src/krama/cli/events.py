@@ -23,6 +23,7 @@ from krama.domain.events import (
     JobConfirmed,
     JobDispatched,
     JobOverran,
+    ShiftExtensionWithdrawn,
     TrafficDelay,
     VanRestored,
     VanUnavailable,
@@ -100,6 +101,14 @@ def build_event(
             worker_id=_require(target, "a worker id"),
             window_start=window_start,
             window_end=window_end,
+        ),
+        "extension-withdrawn": lambda: ShiftExtensionWithdrawn(
+            **base,
+            worker_id=_require(target, "a worker id"),
+            # The agreement being taken back is a fact about a DAY; the window
+            # start names it, or today when none is given.
+            on_date=(window_start or at).date(),
+            reason=reason,
         ),
         "job-dispatched": lambda: JobDispatched(**base, job_id=_require(target, "a job id")),
         "job-cancelled": lambda: JobCancelled(

@@ -301,6 +301,22 @@ class ShiftExtended(EventBase):
     for_customer: str = ""
 
 
+class ShiftExtensionWithdrawn(EventBase):
+    """The yes is taken back: the fitter cannot stay late that day after all.
+
+    Life happens between the agreement and the evening - a sick kid, a ride that
+    fell through. Without this event an extension could only lapse through its
+    customer's fate, which left "Marcus can't stay anymore" unrecordable and the
+    rota chip lying. Scheduling reacts exactly as it would to any availability
+    change: the validator flags what the withdrawal breaks, visibly.
+    """
+
+    type: Literal["shift_extension_withdrawn"] = "shift_extension_withdrawn"
+    worker_id: WorkerId
+    on_date: date
+    reason: str = ""
+
+
 class CrewAskOpened(EventBase):
     """A customer wants hours nobody can currently work; the crew is being asked.
 
@@ -367,6 +383,7 @@ Event = Annotated[
     | OvertimeOffered
     | OvertimeClaimed
     | ShiftExtended
+    | ShiftExtensionWithdrawn
     | CrewAskOpened
     | CrewAskClosed
     | WorkerRemoved

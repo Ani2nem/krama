@@ -2179,3 +2179,31 @@ def test_an_appointment_is_hours_out_not_a_sick_day(client: TestClient):
     )
     van = next(v for v in client.get("/api/world").json()["vans"] if v["id"] == "van-1")
     assert next(d for d in van["days"] if d["date"] == target)["out_note"] == ""
+
+
+def test_a_withdrawn_yes_comes_off_the_rota_and_the_evening(client: TestClient):
+    """ "Marcus can't stay anymore" was unrecordable: an extension could only lapse
+    through its customer's fate, so the rota chip kept promising an evening the
+    fitter had already taken back. The withdrawal is an event like everything else,
+    and the evening goes back to needing a fresh ask."""
+    monday = _next_monday()
+    ask_id = _open_jimmy_ask(client, monday)
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-marcus"})
+    assert "for Jimmy" in _monday_extensions(client, monday)["Marcus"]
+
+    withdrawn = client.post(
+        "/api/events",
+        json={
+            "kind": "extension-withdrawn",
+            "target": "w-marcus",
+            "window_start": f"{monday}T00:00",
+        },
+    )
+    assert withdrawn.status_code == 200
+    assert _monday_extensions(client, monday)["Marcus"] == "", (
+        "the chip stops promising an evening the fitter took back"
+    )
+    # Priya never said yes and Marcus took his back - the ask still knows who to ask.
+    world = client.get("/api/world").json()
+    ask = next(a for a in world["crew_asks"] if a["ask_id"] == ask_id)
+    assert ask["ask_id"] == ask_id, "the promise to call Jimmy back is still owed"
