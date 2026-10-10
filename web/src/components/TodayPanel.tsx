@@ -73,6 +73,20 @@ export function TodayPanel({
 }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  /** The cell being edited, with its editor rendered BELOW the table - a floating
+   * popup inside the table's scroll frame gets clipped invisible (learned once
+   * already). kind distinguishes a fitter's cell from a van's; spans are the
+   * hour-scoped holes already recorded on that day. */
+  const [picked, setPicked] = useState<{
+    kind: "worker" | "van";
+    id: string;
+    name: string;
+    date: string;
+    day: string;
+    spans: [string, string][];
+  } | null>(null);
+  const [outFrom, setOutFrom] = useState("08:00");
+  const [outTo, setOutTo] = useState("10:00");
 
   /** Out sick, van won't start - recorded as the same events everything else already
    * understands. When the backend absorbed the outage on its own - rerouted with
@@ -118,12 +132,13 @@ export function TodayPanel({
     }
   }
 
-  /** Mark one fitter out for one calendar day: midnight to midnight, so the shift
-   * and any overtime reach are both covered, and no other day is touched. */
-  function dayOut(workerId: string, date: string) {
+  /** Mark one fitter or van out for one calendar day: midnight to midnight, so a
+   * shift and any overtime reach are both covered, and no other day is touched. */
+  function dayOut(kind: "worker" | "van", id: string, date: string) {
+    setPicked(null);
     void record({
-      kind: "worker-unavailable",
-      target: workerId,
+      kind: `${kind}-unavailable`,
+      target: id,
       window_start: `${date}T00:00`,
       until: `${date}T23:59`,
     });
@@ -131,12 +146,37 @@ export function TodayPanel({
 
   /** Bring one day back. The restore carries the day as a window, so an outage that
    * spans several days is carved around it rather than cancelled outright. */
-  function dayBack(workerId: string, date: string) {
+  function dayBack(kind: "worker" | "van", id: string, date: string) {
+    setPicked(null);
     void record({
-      kind: "worker-restored",
-      target: workerId,
+      kind: `${kind}-restored`,
+      target: id,
       window_start: `${date}T00:00`,
       window_end: `${date}T23:59`,
+    });
+  }
+
+  /** "Dan is out 8 to 10" - the dentist-appointment case, typed right on the cell
+   * instead of through the call box. Same event either way. */
+  function hoursOut(kind: "worker" | "van", id: string, date: string, from: string, to: string) {
+    setPicked(null);
+    void record({
+      kind: `${kind}-unavailable`,
+      target: id,
+      window_start: `${date}T${from}`,
+      until: `${date}T${to}`,
+    });
+  }
+
+  /** Clear exactly one recorded hole - "the appointment moved" - leaving any other
+   * absence that day alone. */
+  function hoursBack(kind: "worker" | "van", id: string, date: string, span: [string, string]) {
+    setPicked(null);
+    void record({
+      kind: `${kind}-restored`,
+      target: id,
+      window_start: `${date}T${span[0]}`,
+      window_end: `${date}T${span[1]}`,
     });
   }
 
@@ -170,9 +210,9 @@ export function TodayPanel({
       </div>
       {note && <p className="rota__healed">{note}</p>}
       <p className="panel__hint">
-        Click a day to mark someone out for that day; click it again to bring them
-        back. Out for hours, not days? Type it in the call box. Anyone can stay up to
-        two hours past shift on overtime.
+        Click a day to mark a fitter (or a van) out - the whole day, or just some
+        hours. Click an out day to bring them back. Anyone can stay up to two hours
+        past shift on overtime; later than that we ask, never assume.
       </p>
 
       <div className="rota">
@@ -218,15 +258,28 @@ export function TodayPanel({
                       {d.available ? d.shift : "out"}
                     </td>
                   ) : d.available ? (
-                    <td key={d.date} className="rota__cell">
+                    <td
+                      key={d.date}
+                      className={`rota__cell${picked && picked.id === worker.id && picked.date === d.date ? " rota__cell--picked" : ""}`}
+                    >
                       <button
                         className="rota__daybtn"
                         disabled={busy}
-                        title={`mark ${worker.name} out on ${d.day} (sick, absent)`}
-                        onClick={() => dayOut(worker.id, d.date)}
+                        title={`${worker.name}, ${d.day} ${dayOfMonth(d.date)} - mark out (all day or hours)`}
+                        onClick={() =>
+                          setPicked({
+                            kind: "worker",
+                            id: worker.id,
+                            name: worker.name,
+                            date: d.date,
+                            day: d.day,
+                            spans: d.out_spans,
+                          })
+                        }
                       >
                         {d.shift}
                         {d.extended && <span className="rota__extended">{d.extended}</span>}
+                        {d.out_note && <span className="rota__partout">{d.out_note}</span>}
                         <span className="rota__hovermark">{"\u2715"}</span>
                       </button>
                     </td>
@@ -236,7 +289,7 @@ export function TodayPanel({
                         className="rota__daybtn rota__daybtn--out"
                         disabled={busy}
                         title={`${worker.name} is back on ${d.day} - restore`}
-                        onClick={() => dayBack(worker.id, d.date)}
+                        onClick={() => dayBack("worker", worker.id, d.date)}
                       >
                         out
                         <span className="rota__hovermark">{"\u21BA"}</span>
@@ -246,8 +299,114 @@ export function TodayPanel({
                 )}
               </tr>
             ))}
+            {/* The vans, on the same rota. A breakdown is an availability fact with
+                dates exactly like a sick day, and it was only recordable by typing
+                into the call box - a clickable fact belongs on the clickable table. */}
+            {world.vans.map((van) => (
+              <tr key={van.id} className="rota__vanrow">
+                <td className="rota__who">
+                  <strong>{van.id}</strong>
+                  <span className="rota__certs" title="van">{"\u{1F690}"}</span>
+                </td>
+                {van.days.map((d) =>
+                  !d.actionable ? (
+                    <td key={d.date} className="rota__cell rota__cell--past">
+                      {d.available ? "up" : "down"}
+                    </td>
+                  ) : d.available ? (
+                    <td
+                      key={d.date}
+                      className={`rota__cell${picked && picked.id === van.id && picked.date === d.date ? " rota__cell--picked" : ""}`}
+                    >
+                      <button
+                        className="rota__daybtn"
+                        disabled={busy}
+                        title={`${van.id}, ${d.day} ${dayOfMonth(d.date)} - mark down (all day or hours)`}
+                        onClick={() =>
+                          setPicked({
+                            kind: "van",
+                            id: van.id,
+                            name: van.id,
+                            date: d.date,
+                            day: d.day,
+                            spans: d.out_spans,
+                          })
+                        }
+                      >
+                        up
+                        {d.out_note && <span className="rota__partout">{d.out_note}</span>}
+                        <span className="rota__hovermark">{"\u2715"}</span>
+                      </button>
+                    </td>
+                  ) : (
+                    <td key={d.date} className="rota__cell rota__cell--out">
+                      <button
+                        className="rota__daybtn rota__daybtn--out"
+                        disabled={busy}
+                        title={`${van.id} is running again on ${d.day} - restore`}
+                        onClick={() => dayBack("van", van.id, d.date)}
+                      >
+                        down
+                        <span className="rota__hovermark">{"\u21BA"}</span>
+                      </button>
+                    </td>
+                  ),
+                )}
+              </tr>
+            ))}
           </tbody>
         </table>
+
+        {picked && (
+          <div className="rota__editor">
+            <strong>
+              {picked.name} · {picked.day} {dayOfMonth(picked.date)}
+            </strong>
+            <button
+              disabled={busy}
+              onClick={() => dayOut(picked.kind, picked.id, picked.date)}
+            >
+              {picked.kind === "van" ? "Down all day" : "Out all day"}
+            </button>
+            <span className="rota__hours">
+              from{" "}
+              <input
+                type="time"
+                value={outFrom}
+                disabled={busy}
+                onChange={(e) => setOutFrom(e.target.value)}
+              />{" "}
+              to{" "}
+              <input
+                type="time"
+                value={outTo}
+                disabled={busy}
+                onChange={(e) => setOutTo(e.target.value)}
+              />
+              <button
+                disabled={busy || outFrom >= outTo}
+                title={outFrom >= outTo ? "the hours must run forward" : ""}
+                onClick={() => hoursOut(picked.kind, picked.id, picked.date, outFrom, outTo)}
+              >
+                {picked.kind === "van" ? "Down these hours" : "Out these hours"}
+              </button>
+            </span>
+            {picked.spans.map((span) => (
+              <button
+                key={span.join("-")}
+                className="rota__spanback"
+                disabled={busy}
+                title="this hole only - the rest of the day stays as recorded"
+                onClick={() => hoursBack(picked.kind, picked.id, picked.date, span)}
+              >
+                back {span[0]} - {span[1]} {"\u21BA"}
+              </button>
+            ))}
+            <button className="rota__editorclose" onClick={() => setPicked(null)}>
+              Done
+            </button>
+          </div>
+        )}
       </div>
 
       <p className="rota__legend">

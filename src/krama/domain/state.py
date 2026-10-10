@@ -133,6 +133,14 @@ class WorldState:
     #: One-day agreements to work late, keyed by (worker, date). The value is how
     #: late; scheduling honours it for that date, pay treats it as plain overtime.
     shift_extensions: dict[tuple[WorkerId, date], datetime] = field(default_factory=dict)
+    #: Which crew ask gathered each extension, and who the fitter agreed to stay
+    #: for. A yes is for a customer, not a blank cheque: these let the fold release
+    #: an agreement when its customer cancels or is told no, and let a quote refuse
+    #: to spend someone's late stay on a different caller without asking again.
+    extension_sources: dict[tuple[WorkerId, date], str] = field(default_factory=dict)
+    extension_notes: dict[tuple[WorkerId, date], str] = field(default_factory=dict)
+    #: Crew ask -> the booking that resolved it (CrewAskClosed outcome "booked").
+    ask_bookings: dict[str, str] = field(default_factory=dict)
     #: Unresolved crew asks - promises to call a customer back.
     crew_asks: dict[str, CrewAsk] = field(default_factory=dict)
     #: Owner-set prices, overriding the estimated rate card field by field. The
@@ -158,6 +166,26 @@ class WorldState:
 
     def extension_for(self, worker_id: WorkerId, on_date: date) -> datetime | None:
         return self.shift_extensions.get((worker_id, on_date))
+
+    def extension_covers(self, worker_id: WorkerId, on_date: date, phone: str) -> bool:
+        """May THIS caller's booking ride this fitter's late stay?
+
+        Yes when the extension is unscoped (recorded by hand, no ask behind it), or
+        when the ask that gathered it is still open and belongs to this caller's
+        phone number. A yes consumed by a booked job, or given for someone else's
+        hours, is not this caller's to spend - ask the crew again.
+        """
+        src = self.extension_sources.get((worker_id, on_date))
+        if src is None:
+            return True
+        ask = self.crew_asks.get(src)
+        if ask is None:
+            return False
+        mine = _digits(phone)
+        return bool(mine) and _digits(ask.phone) == mine
+
+    def extension_customer(self, worker_id: WorkerId, on_date: date) -> str:
+        return self.extension_notes.get((worker_id, on_date), "")
 
     def is_worker_available(self, worker_id: WorkerId, start: datetime, end: datetime) -> bool:
         if worker_id not in self.workers:
@@ -265,6 +293,12 @@ def _apply(state: WorldState, event: Event) -> None:
                     update={"commitment_state": CommitmentState.CANCELLED}
                 )
             state.overtime_offers.pop(event.job_id, None)
+            # Late stays agreed for this booking lapse with it: the fitter said yes
+            # to this customer's evening, not to evenings in general.
+            for ask_id, booked in list(state.ask_bookings.items()):
+                if booked == event.job_id:
+                    _release_ask_extensions(state, ask_id)
+                    state.ask_bookings.pop(ask_id, None)
 
         case CustomerRescheduled():
             # A confirmed window the customer themselves moved is no longer a promise
@@ -348,6 +382,14 @@ def _apply(state: WorldState, event: Event) -> None:
             # seven" does not cancel "I can stay to eight".
             if standing is None or event.until_time > standing:
                 state.shift_extensions[key] = event.until_time
+                if event.ask_id:
+                    state.extension_sources[key] = event.ask_id
+                else:
+                    state.extension_sources.pop(key, None)
+                if event.for_customer:
+                    state.extension_notes[key] = event.for_customer
+                else:
+                    state.extension_notes.pop(key, None)
 
         case CrewAskOpened():
             state.crew_asks[event.ask_id] = CrewAsk(
@@ -363,6 +405,13 @@ def _apply(state: WorldState, event: Event) -> None:
 
         case CrewAskClosed():
             state.crew_asks.pop(event.ask_id, None)
+            if event.outcome == "booked" and event.job_id:
+                # The yeses stand: they back this booking now, and lapse with it.
+                state.ask_bookings[event.ask_id] = event.job_id
+            else:
+                # The customer was told no (or the ask abandoned). Nobody is
+                # staying late for a job that is not happening.
+                _release_ask_extensions(state, event.ask_id)
 
         case OvertimeClaimed():
             offer = state.overtime_offers.get(event.job_id)
@@ -390,6 +439,19 @@ def _apply(state: WorldState, event: Event) -> None:
             # JobSlotOffered, PlanProposed, ProposalApproved and ProposalRejected are
             # recorded for audit and eval labelling but do not mutate world state.
             pass
+
+
+def _digits(phone: str) -> str:
+    return "".join(ch for ch in phone if ch.isdigit())
+
+
+def _release_ask_extensions(state: WorldState, ask_id: str) -> None:
+    """Forget every late-stay agreement a crew ask gathered."""
+    for key, src in list(state.extension_sources.items()):
+        if src == ask_id:
+            state.shift_extensions.pop(key, None)
+            state.extension_sources.pop(key, None)
+            state.extension_notes.pop(key, None)
 
 
 def fold(events: Iterable[Event], as_of: datetime | None = None) -> WorldState:

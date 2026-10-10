@@ -292,6 +292,13 @@ class ShiftExtended(EventBase):
     on_date: date
     until_time: datetime
     reason: str = ""
+    #: The crew ask that gathered this yes, when one did. A yes given to "can you
+    #: stay for Jimmy" is not a standing offer to work evenings: scoping it here is
+    #: what lets the fold release it when Jimmy cancels, and what stops a different
+    #: customer's quote from silently spending it.
+    ask_id: str = ""
+    #: Who the fitter agreed to stay for, in words the rota can show.
+    for_customer: str = ""
 
 
 class CrewAskOpened(EventBase):
@@ -322,6 +329,9 @@ class CrewAskClosed(EventBase):
     type: Literal["crew_ask_closed"] = "crew_ask_closed"
     ask_id: str
     outcome: str = ""
+    #: The booking that resolved the ask, when the outcome is "booked". The link a
+    #: later cancellation follows to let the crew off the hook they said yes to.
+    job_id: str = ""
 
 
 class OvertimeClaimed(EventBase):

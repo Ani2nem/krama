@@ -7,7 +7,7 @@ leaks into the model the solver reasons about.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, tzinfo
+from datetime import date, datetime, time, timedelta, tzinfo
 
 from krama.api.models import (
     CandidateView,
@@ -20,6 +20,7 @@ from krama.api.models import (
     RouteView,
     StopView,
     UnservedView,
+    VanDayView,
     VanView,
     WorkerDayView,
     WorkerView,
@@ -31,7 +32,7 @@ from krama.domain.diff import PlanDiff
 from krama.domain.enums import NOT_A_FAILURE
 from krama.domain.invariants import Violation
 from krama.domain.models import CostBreakdown, CrewRoute, Job, PlanVersion, Worker
-from krama.domain.state import WorldState
+from krama.domain.state import Unavailability, WorldState
 from krama.formatting import clock, clock_range
 from krama.scheduler.costing import RouteCost
 from krama.scheduler.repair import RepairCandidate, RepairOptions
@@ -168,6 +169,45 @@ def _window_text(job: Job, tz: tzinfo) -> str:
     return f"{start:%a} {clock_range(start, end)} {window.hardness.value}"
 
 
+def _day_outages(
+    outages: list[Unavailability], day_open: datetime, day_close: datetime, tz: tzinfo
+) -> tuple[bool, str, list[list[str]]]:
+    """(fully out, "out 8:00 - 10:00 AM") for one person or van on one day.
+
+    The rota used to collapse any overlap into a whole-day "out": a dentist
+    appointment looked like a sick day, and the real two-hour hole was invisible.
+    Partial windows are clipped to the day and named; "fully out" is true only when
+    the merged windows actually cover the whole span.
+    """
+    clipped: list[tuple[datetime, datetime]] = []
+    for o in outages:
+        until = o.until_time or day_close
+        start = max(o.from_time, day_open)
+        end = min(until, day_close)
+        if start < end:
+            clipped.append((start, end))
+    if not clipped:
+        return False, "", []
+    clipped.sort()
+    merged = [clipped[0]]
+    for start, end in clipped[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    whole = len(merged) == 1 and merged[0][0] <= day_open and merged[0][1] >= day_close
+    if whole:
+        return True, "", []
+    note = ", ".join(
+        f"out {clock_range(start.astimezone(tz), end.astimezone(tz))}" for start, end in merged
+    )
+    spans = [
+        [f"{start.astimezone(tz):%H:%M}", f"{end.astimezone(tz):%H:%M}"] for start, end in merged
+    ]
+    return False, note, spans
+
+
 def _worker_week(
     worker: Worker,
     world: WorldState,
@@ -202,6 +242,10 @@ def _worker_week(
                 if worker.overtime_eligible and overtime:
                     reach = f"can stay to {clock(closes + timedelta(minutes=overtime))}"
                 extension = world.extension_for(worker.id, cursor)
+                for_whom = world.extension_customer(worker.id, cursor)
+                fully_out, out_note, out_spans = _day_outages(
+                    world.worker_outages.get(worker.id, []), opens, closes, tz
+                )
                 days.append(
                     WorkerDayView(
                         date=cursor.isoformat(),
@@ -209,16 +253,55 @@ def _worker_week(
                         shift=clock_range(hours.start, hours.end),
                         reach=reach,
                         extended=(
-                            f"agreed to stay to {clock(extension.astimezone(tz))}"
+                            # Named, because the yes is scoped: "staying for Jimmy"
+                            # is an agreement; a bare "staying to 8:45" read as
+                            # standing evening capacity, which it never was.
+                            f"staying to {clock(extension.astimezone(tz))}"
+                            + (f" for {for_whom}" if for_whom else " (agreed)")
                             if extension
                             else ""
                         ),
-                        available=world.is_worker_available(worker.id, opens, closes),
+                        available=not fully_out,
+                        out_note=out_note,
+                        out_spans=out_spans,
                         # Once the shift and any overtime reach are behind the clock
                         # there is nothing left to block out or bring back.
                         actionable=datetime.now(tz) < latest,
                     )
                 )
+        cursor += timedelta(days=1)
+    return days
+
+
+def _van_week(
+    van_id: str, world: WorldState, tz: tzinfo, rota_start: date | None = None
+) -> list[VanDayView]:
+    """A van's rota week: a breakdown is a fact on the same table as the crew.
+
+    Vans have no shifts, so a day runs midnight to midnight; the cells share the
+    crew grammar - whole-day out, or an hour-scoped "out 8:00 - 10:00 AM" note.
+    """
+    start = rota_start or datetime.now(tz).date()
+    rostered = {h.weekday for w in world.workers.values() for h in w.working_hours}
+    days: list[VanDayView] = []
+    cursor = start
+    while len(days) < 5 and (cursor - start).days < 14:
+        if cursor.weekday() in rostered:
+            day_open = datetime.combine(cursor, time(0, 0), tzinfo=tz)
+            day_close = datetime.combine(cursor, time(23, 59), tzinfo=tz)
+            fully_out, out_note, out_spans = _day_outages(
+                world.van_outages.get(van_id, []), day_open, day_close, tz
+            )
+            days.append(
+                VanDayView(
+                    date=cursor.isoformat(),
+                    day=f"{cursor:%a}",
+                    available=not fully_out,
+                    out_note=out_note,
+                    out_spans=out_spans,
+                    actionable=datetime.now(tz) < day_close,
+                )
+            )
         cursor += timedelta(days=1)
     return days
 
@@ -268,6 +351,7 @@ def world_view(
                 label=v.label,
                 available=world.is_van_available(v.id, today, end_of_day),
                 stock=dict(sorted(v.stock.items())),
+                days=_van_week(v.id, world, tz, rota_start),
             )
             for v in sorted(world.vans.values(), key=lambda v: v.id)
         ],

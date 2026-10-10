@@ -1373,3 +1373,36 @@ button.link:hover:not(:disabled) { color: #6fd6e8; }
 /* The rota wears its dates - "Mon" alone means nothing once the week arrows exist. */
 .rota__date { font-weight: 500; color: #8a8a96; font-size: 11px; }
 .crewcard__range { color: #6a6a76; font-size: 13px; }
+
+/* Leaflet stacks its panes up to z-index ~1000 INSIDE the map; isolating the map
+   keeps that private, so overlays (Configure, job cards) win on their own terms. */
+.map { isolation: isolate; position: relative; z-index: 0; }
+
+/* Hour-scoped absences on the rota, and the editor strip below the table. */
+.rota__partout {
+  display: block;
+  font-size: 11px;
+  color: #a05a00;
+  background: rgb(255 240 214 / 0.9);
+  border-radius: 6px;
+  padding: 1px 5px;
+  margin-top: 2px;
+}
+.rota__cell--picked { outline: 2px solid var(--accent, #4a4a68); outline-offset: -2px; }
+.rota__vanrow td { border-top: 2px solid #ececf2; }
+.rota__editor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #f6f6fa;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.rota__editor button { font-size: 12px; padding: 4px 10px; }
+.rota__hours { display: inline-flex; align-items: center; gap: 6px; }
+.rota__hours input { font-size: 12px; padding: 2px 4px; }
+.rota__spanback { background: #fff; }
+.rota__editorclose { margin-left: auto; }
