@@ -661,6 +661,11 @@ def plan_day(
     # A van that dies at 10:40 was perfectly usable at 06:00, and excluding it from
     # the whole day throws away a morning of capacity for no reason.
     shift_span: dict[WorkerId, tuple[int, int]] = {}
+    #: Workers whose usable day ends at an OUTAGE edge rather than their shift
+    #: close - "out 10 to 11" truncating the morning. Overtime extends shift
+    #: closes, never absences: letting the standard allowance reach past a
+    #: dentist appointment scheduled Priya's install straight through it.
+    cut_short: dict[WorkerId, bool] = {}
     workers: list[Worker] = []
     for worker in sorted(world.workers.values(), key=lambda w: w.id):
         span = _shift_window(worker, on_date)
@@ -673,6 +678,7 @@ def plan_day(
             continue
         workers.append(worker)
         shift_span[worker.id] = usable
+        cut_short[worker.id] = usable[1] < span[1]
 
     van_window: dict[VanId, tuple[int, int]] = {}
     vans: list[VanId] = []
@@ -807,12 +813,14 @@ def plan_day(
         for worker in workers:
             span_start, span_end = shift_span[worker.id]
             model.add(crew_start[k] >= span_start).only_enforce_if(assign[worker.id, k])
-            allowance = overtime if worker.overtime_eligible else 0
-            extended = world.extension_for(worker.id, on_date)
-            if extended is not None:
-                extended_min = _clamp_to_day(extended, day_start, params.business_tz)
-                if extended_min is not None:
-                    allowance = max(allowance, extended_min - span_end)
+            allowance = 0
+            if not cut_short[worker.id]:
+                allowance = overtime if worker.overtime_eligible else 0
+                extended = world.extension_for(worker.id, on_date)
+                if extended is not None:
+                    extended_min = _clamp_to_day(extended, day_start, params.business_tz)
+                    if extended_min is not None:
+                        allowance = max(allowance, extended_min - span_end)
             model.add(crew_end[k] <= span_end + allowance).only_enforce_if(assign[worker.id, k])
         # The crew cannot start before its van is available or finish after it goes down.
         usable_start, usable_end = van_window[van_of(k)]
@@ -1097,12 +1105,14 @@ def plan_day(
     # may split the 120 minutes (or an agreed extension), never bank it twice.
     for worker in workers:
         span_close = shift_span[worker.id][1]
-        allowance = overtime if worker.overtime_eligible else 0
-        extended = world.extension_for(worker.id, on_date)
-        if extended is not None:
-            extended_min = _clamp_to_day(extended, day_start, params.business_tz)
-            if extended_min is not None:
-                allowance = max(allowance, extended_min - span_close)
+        allowance = 0
+        if not cut_short[worker.id]:
+            allowance = overtime if worker.overtime_eligible else 0
+            extended = world.extension_for(worker.id, on_date)
+            if extended is not None:
+                extended_min = _clamp_to_day(extended, day_start, params.business_tz)
+                if extended_min is not None:
+                    allowance = max(allowance, extended_min - span_close)
         model.add(sum(member_ot_vars[worker.id]) <= allowance)
 
     # Epsilon tie-break: one cent per van index, so equal-cost plans always pick the
