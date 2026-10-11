@@ -404,3 +404,43 @@ def test_crews_re_form_at_the_shop_for_the_afternoon(world, travel, params):
     # van or fitter, every leg recomputed from the road - the afternoon run is a
     # real departure from the shop, not a teleport from somebody's kerb.
     assert_feasible(result, world, travel)
+
+
+def test_an_hour_out_is_honoured_not_overtimed_through(world, travel, params):
+    """Priya out 10 to 11 had her 8:00 install scheduled straight through the
+    hole: the usable morning ended at 10:00, and the overtime allowance - meant
+    for evenings after a shift CLOSE - reached past the outage edge. Overtime
+    extends shifts, not absences: work now lands clear of the hole, and the
+    independent checker agrees."""
+    from krama.domain.models import TimeWindow
+
+    world.worker_outages["w-dan"] = [
+        Unavailability(from_time=_at(0, 10), until_time=_at(0, 11), reason="dentist")
+    ]
+    template = world.jobs["j-401"]
+    world.jobs["j-long"] = template.model_copy(
+        update={
+            "id": "j-long",
+            "customer_name": "Long morning",
+            "required_certifications": frozenset(),
+            "crew_size": 1,
+            "estimated_duration_min": 150,
+            "windows": (TimeWindow(start=_at(0, 8), end=_at(0, 17)),),
+        }
+    )
+
+    result = plan_day(
+        world=world,
+        travel=travel,
+        on_date=MONDAY,
+        candidate_job_ids=["j-long"],
+        params=params,
+        pinned_workers={"j-long": ("w-dan",)},
+    )
+    assert not result.unserved, reasons(result)
+    stop = next(s for r in result.routes for s in r.stops if s.job_id == "j-long")
+    local = stop.arrival.astimezone(BUSINESS_TZ)
+    assert local.hour >= 11 or stop.departure.astimezone(BUSINESS_TZ).hour < 10, (
+        f"150 minutes cannot fit before a 10:00 hole - scheduled at {local:%H:%M}"
+    )
+    assert_feasible(result, world, travel)
