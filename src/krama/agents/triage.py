@@ -104,6 +104,8 @@ Rules:
   recorded correctly as it stands, leave `question` empty. Colour and context - whether
   a tow is en route, how bad the damage looks - do not change what gets recorded, and
   asking about them buries the questions that do.
+- A plain statement of fact - "van 3 won't start", "Priya is out sick", "traffic is
+  terrible on the 287" - is complete as spoken. Record it; never ask about one.
 - Times are 24-hour HH:MM. "half ten" is 10:30, "quarter to noon" is 11:45.
 - job-overran needs `minutes`. traffic-delay needs `multiplier`.
 - If no time is given, leave `at` empty. It defaults to now, which is almost always
