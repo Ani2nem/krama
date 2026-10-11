@@ -291,6 +291,9 @@ export function NotePanel({
                 <dd>
                   {draft.duration_minutes} min ±{draft.duration_confidence}
                   <span className="muted"> from the catalogue</span>
+                  {draft.access_note && (
+                    <span className="muted"> · {draft.access_note}</span>
+                  )}
                 </dd>
                 <dt>Crew</dt>
                 <dd>{draft.crew_size} · {draft.certifications.join(", ") || "no certs"}</dd>

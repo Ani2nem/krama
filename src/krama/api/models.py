@@ -264,6 +264,9 @@ class DraftView(Api):
     commitment_quotes: list[str] = Field(default_factory=list)
     lead_time_days: int = 0
     site_notes: str = ""
+    #: "+15 min for street parking" - the access answer as schedule fact, already
+    #: inside duration_minutes, named so the card can show its work.
+    access_note: str = ""
     lat: float | None = None
     lon: float | None = None
 

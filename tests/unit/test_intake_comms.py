@@ -517,3 +517,44 @@ def test_a_service_the_business_does_not_sell_is_a_referral_not_a_quote(business
 
     offered = run_intake(CALL, business, geocoder)
     assert not offered.not_offered, "residential work books exactly as before"
+
+
+def test_access_is_minutes_on_the_schedule_not_a_prose_note():
+    """ "Street parking only" means someone carries a storefront pane down the
+    block - real crew-minutes, so they land in the duration the solver schedules
+    and the quote bills, not in a note nobody prices. And the answer counts as
+    answered: the board must not ask about access the caller just described."""
+    from krama.domain.catalog import lookup
+    from krama.domain.enums import ServiceType
+
+    plain = lookup(ServiceType.STOREFRONT_GLASS)
+    kerb = lookup(ServiceType.STOREFRONT_GLASS, site_access="street_parking")
+    alley = lookup(ServiceType.STOREFRONT_GLASS, site_access="difficult")
+    dock = lookup(ServiceType.STOREFRONT_GLASS, site_access="easy")
+
+    assert kerb.duration_min == plain.duration_min + 15
+    assert kerb.access_buffer_min == 15 and kerb.access_label == "street parking"
+    assert alley.duration_min == plain.duration_min + 25
+    assert dock.duration_min == plain.duration_min, "a loading dock costs nothing extra"
+
+    assert "street or alley access" in plain.missing_details
+    for answered in (kerb, alley, dock):
+        assert "street or alley access" not in answered.missing_details
+
+
+def test_the_access_answer_is_heard_even_when_the_model_forgets():
+    """The deterministic backstop: a caller who said "it's alley access only"
+    answered the access question, whether or not the model ticked the box."""
+
+    from krama.agents.intake import _ANSWERED_BY
+
+    pattern = _ANSWERED_BY["street or alley access"]
+    for said in (
+        "it's alley access only",
+        "you can park on the street out front",
+        "there's a loading dock around back",
+        "park right at the door",
+        "we have a driveway",
+    ):
+        assert pattern.search(said), said
+    assert not pattern.search("the glass is broken and we open at nine")
