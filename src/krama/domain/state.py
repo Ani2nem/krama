@@ -466,15 +466,22 @@ def _release_ask_extensions(state: WorldState, ask_id: str) -> None:
 def fold(events: Iterable[Event], as_of: datetime | None = None) -> WorldState:
     """Replay the log into a world state.
 
-    Events are applied in ``recorded_at`` order - the order we *learned* things -
-    and any event recorded after ``as_of`` is excluded, so the result is exactly
-    what was knowable at that moment.
+    Events are applied in LOG ORDER - the order they were appended, which for a
+    single-writer log IS the order we learned things. Re-sorting by recorded_at
+    looked equivalent and was not: a batch that tied to the second fell back to
+    the random event id (a cancellation could replay before the booking it
+    undid), and one mis-stamped event - a correction once stamped with the
+    outage's own future time - outranked every later fix forever. The appended
+    sequence is the one source that cannot lie about what we knew when.
+
+    ``as_of`` still filters by ``recorded_at``: events learned after that moment
+    are excluded, so the result is what was knowable then.
     """
-    ordered: Sequence[Event] = sorted(events, key=lambda e: (e.recorded_at, e.event_id))
+    ordered: Sequence[Event] = list(events)
     if as_of is not None:
         ordered = [e for e in ordered if e.recorded_at <= as_of]
 
-    resolved_as_of = as_of or (ordered[-1].recorded_at if ordered else datetime.min)
+    resolved_as_of = as_of or (max((e.recorded_at for e in ordered), default=datetime.min))
     state = WorldState(as_of=resolved_as_of)
     for event in ordered:
         _apply(state, event)
