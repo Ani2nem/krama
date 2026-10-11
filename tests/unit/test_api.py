@@ -2379,3 +2379,105 @@ def test_accepting_a_reschedule_replans_in_the_same_breath(client: TestClient, m
     on_date, _stop = placed
     assert on_date == tuesday.isoformat(), "the booking lives on Tuesday now"
     assert plan["violations"] == [], "and nothing is left contradicting the plan"
+
+
+def test_moving_a_promise_takes_a_decision_not_a_side_effect(client: TestClient, monkeypatch):
+    """The rebuild used to hand back a refused draft and the UI wore it as the
+    schedule: Maria appeared at 8 PM, never committed, never told. Now a rebuild
+    that can only work by moving a promise refuses with the customer's name; the
+    dispatcher moves it with an explicit press, and the moved promise stays
+    loudly visible until somebody actually calls."""
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday = _next_monday()
+    draft = {
+        "customer_name": "Maria",
+        "phone": "9138598499",
+        "address": "blue jean dr",
+        "service_type": "shower_door_install",
+        "duration_minutes": 150,
+        "duration_confidence": 60,
+        "crew_size": 1,
+        # shower + commercial: in the fixture only Priya holds both, so her
+        # morning IS the promise's feasibility.
+        "certifications": ["shower_door", "commercial_storefront"],
+        "commitment_cost": 40,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    booked = client.post(
+        "/api/book",
+        json={"draft": draft, "date": monday, "arrival": "09:00", "quoted_total": 897.39},
+    ).json()
+    assert booked["job_id"]
+
+    # Both shower-certified fitters lose the morning - the promise is unkeepable.
+    for fitter in ("w-priya", "w-alex"):
+        client.post(
+            "/api/events",
+            json={
+                "kind": "worker-unavailable",
+                "target": fitter,
+                "window_start": f"{monday}T06:00",
+                "until": f"{monday}T12:00",
+            },
+        )
+
+    refused = client.post("/api/plan/commit")
+    assert refused.status_code == 409
+    body = refused.json()["detail"]
+    assert body["error"] == "PromisesAtRisk"
+    assert "Maria" in body["detail"] and "was promised" in body["detail"]
+
+    moved = client.post("/api/plan/commit?move_promises=true")
+    assert moved.status_code == 200, moved.text
+
+    plan = client.get("/api/plan").json()
+    assert any("Maria" in v and "have not been told" in v for v in plan["violations"]), (
+        "the moved promise stays loud until the customer hears about it"
+    )
+    stop = next(s for r in plan["routes"] for s in r["stops"] if s["job_id"] == booked["job_id"])
+    assert stop["arrival"][11:16] >= "12:00", "served when Priya is actually back"
+
+
+def test_withdrawing_the_yes_breaks_the_plan_visibly(client: TestClient, monkeypatch):
+    """Pressing "won't stay late after all" used to change nothing on the board:
+    the checker waved through ANY overtime for an eligible fitter, so the plan
+    kept Priya five hours past her shift on a yes she had just taken back."""
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday = _next_monday()
+    ask_id = _open_jimmy_ask(client, monday)
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-marcus"})
+    client.post(f"/api/asks/{ask_id}/extend", params={"worker_id": "w-priya"})
+    draft = {
+        "customer_name": "Jimmy",
+        "phone": "8175768492",
+        "address": "walmart haslet",
+        "service_type": "storefront_glass",
+        "duration_minutes": 180,
+        "duration_confidence": 90,
+        "crew_size": 2,
+        "certifications": ["commercial_storefront"],
+        "commitment_cost": 0,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    booked = client.post(
+        "/api/book", json={"draft": draft, "date": monday, "arrival": "17:00"}
+    ).json()
+    assert booked["status"] == "scheduled"
+    assert client.get("/api/plan").json()["violations"] == []
+
+    client.post(
+        "/api/events",
+        json={
+            "kind": "extension-withdrawn",
+            "target": "w-priya",
+            "window_start": f"{monday}T00:00",
+        },
+    )
+    violations = client.get("/api/plan").json()["violations"]
+    assert any("past their overtime reach" in v for v in violations), (
+        f"a taken-back yes must break the plan it was holding up: {violations}"
+    )

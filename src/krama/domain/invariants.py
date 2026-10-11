@@ -70,6 +70,17 @@ class Violation(Frozen):
         return f"[{self.code.value}] {self.detail}" + (f" ({where})" if where else "")
 
 
+def _say_window(window: TimeWindow, tz: tzinfo) -> str:
+    start = window.start.astimezone(tz)
+    end = window.end.astimezone(tz)
+    return f"{start:%a %-I:%M %p} - {end:%-I:%M %p}"
+
+
+def _say_moment(moment: datetime, tz: tzinfo) -> str:
+    local = moment.astimezone(tz)
+    return f"{local:%a %-I:%M %p}"
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationConfig:
     """Tolerances for the checker.
@@ -82,6 +93,11 @@ class ValidationConfig:
     business_tz: tzinfo
     travel_slack_minutes: int = 1
     allow_overtime: bool = True
+    #: How far past a shift close overtime may legally keep someone. The check
+    #: used to wave through ANY end for an eligible worker, which meant
+    #: withdrawing the extension that justified an evening changed nothing on
+    #: the board - the plan kept a fitter five hours late and called it fine.
+    overtime_max_minutes: int = 120
     #: Promises a human has agreed to break. A plan that moves a confirmed window
     #: without its job appearing here is rejected - the release has to be a decision
     #: somebody made, not something a solver did quietly and a checker inferred.
@@ -455,16 +471,21 @@ def _check_windows(
                         code=code,
                         detail=(
                             (
-                                "crew arrives before any window opens"
-                                if early
-                                else (
-                                    "a promised window was moved"
-                                    if job.commitment_state is CommitmentState.CONFIRMED
+                                f"{job.customer_name} was promised "
+                                f"{_say_window(job.windows[0], config.business_tz)} and this "
+                                f"plan has them at {_say_moment(stop.arrival, config.business_tz)}"
+                                " - they have not been told"
+                            )
+                            if job.commitment_state is CommitmentState.CONFIRMED
+                            else (
+                                (
+                                    "crew arrives before any window opens"
+                                    if early
                                     else "service runs past the end of a hard window"
                                 )
+                                + f": {stop.arrival.isoformat()}..{stop.departure.isoformat()} "
+                                f"against [{declared}]"
                             )
-                            + f": {stop.arrival.isoformat()}..{stop.departure.isoformat()} "
-                            f"against [{declared}]"
                         ),
                         job_id=job.id,
                         crew_id=route.crew_id,
@@ -529,20 +550,33 @@ def _check_working_hours(
                         on_date=route.date,
                     )
                 )
-            if end_local.time() > hours.end and not (
-                config.allow_overtime and worker.overtime_eligible
-            ):
+            allowance = (
+                config.overtime_max_minutes
+                if config.allow_overtime and worker.overtime_eligible
+                else 0
+            )
+            allowed_end = datetime.combine(
+                end_local.date(), hours.end, tzinfo=config.business_tz
+            ) + timedelta(minutes=allowance)
+            extension = world.extension_for(worker_id, route.date)
+            if extension is not None:
+                allowed_end = max(allowed_end, extension.astimezone(config.business_tz))
+            if end_local > allowed_end:
                 reason = (
-                    "overtime is disabled for this solve"
-                    if config.allow_overtime
-                    else "worker is not overtime eligible"
+                    "past their overtime reach - a late stay needs the fitter's yes"
+                    if allowance
+                    else (
+                        "overtime is disabled for this solve"
+                        if not config.allow_overtime
+                        else "worker is not overtime eligible"
+                    )
                 )
                 out.append(
                     Violation(
                         code=ViolationCode.OUTSIDE_WORKING_HOURS,
                         detail=(
-                            f"route ends {end_local.time()} after the shift ends at "
-                            f"{hours.end} and {reason}"
+                            f"route keeps them to {end_local.time()} but their day "
+                            f"ends at {allowed_end.time()} - {reason}"
                         ),
                         worker_id=worker_id,
                         crew_id=route.crew_id,

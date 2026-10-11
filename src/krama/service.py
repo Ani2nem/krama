@@ -214,6 +214,20 @@ class DispatchService:
 
     # ------------------------------------------------------------------ planning
 
+    def validation_config(
+        self,
+        *,
+        allow_overtime: bool = True,
+        released_job_ids: frozenset[JobId] = frozenset(),
+    ) -> ValidationConfig:
+        """The checker's tolerances, with the business's real overtime ceiling."""
+        return ValidationConfig(
+            business_tz=self.tz,
+            allow_overtime=allow_overtime,
+            overtime_max_minutes=int(self.business.labor.overtime_max_minutes.value),
+            released_job_ids=released_job_ids,
+        )
+
     def plan_week(
         self,
         start: date,
@@ -222,6 +236,7 @@ class DispatchService:
         world: WorldState | None = None,
         pinned_workers: Mapping[JobId, tuple[WorkerId, ...]] | None = None,
         now: datetime | None = None,
+        authorized_releases: frozenset[JobId] = frozenset(),
     ) -> PlanResult:
         """Plan the rolling horizon and check it. Does not commit.
 
@@ -270,7 +285,11 @@ class DispatchService:
                 plan,
                 state,
                 travel,
-                ValidationConfig(business_tz=self.tz, allow_overtime=allow_overtime),
+                # A release only passes validation when somebody authorised it -
+                # the checker's own rule, now actually used by the commit flow.
+                self.validation_config(
+                    allow_overtime=allow_overtime, released_job_ids=authorized_releases
+                ),
             )
             cost, route_costs = cost_plan(plan, state, self.business, self.tz, result.unserved)
 
