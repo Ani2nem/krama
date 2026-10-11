@@ -444,3 +444,65 @@ def test_an_hour_out_is_honoured_not_overtimed_through(world, travel, params):
         f"150 minutes cannot fit before a 10:00 hole - scheduled at {local:%H:%M}"
     )
     assert_feasible(result, world, travel)
+
+
+def test_a_released_promise_is_served_when_the_crew_can_not_when_the_window_says(
+    world, travel, params
+):
+    """Maria's shower install cannot be kept: only one fitter holds the cert, her
+    free morning ends at a 10:00 appointment, and the promised 8:00 start plus
+    the work runs past it. The solver releases the promise - priced, visible -
+    and serves her when the crew genuinely can. The materializer used to wait
+    for the released window anyway, pushing the stop back into the very hole
+    the early start avoided, and the day came back "worker unavailable" instead
+    of the honest "we must call this customer"."""
+    from krama.domain.models import TimeWindow
+
+    world.worker_outages["w-priya"] = [
+        Unavailability(from_time=_at(0, 10), until_time=_at(0, 11), reason="dentist")
+    ]
+    only_priya = world.jobs["j-401"].model_copy(
+        update={
+            "id": "j-maria",
+            "customer_name": "Maria",
+            "required_certifications": world.workers["w-priya"].certifications
+            - world.workers["w-marcus"].certifications,
+            "crew_size": 1,
+            "estimated_duration_min": 150,
+            "commitment_state": CommitmentState.CONFIRMED,
+            "commitment_cost": 40.0,
+            "windows": (TimeWindow(start=_at(0, 8), end=_at(0, 10)),),
+        }
+    )
+    assert only_priya.required_certifications, "the squeeze needs a Priya-only cert"
+    world.jobs["j-maria"] = only_priya
+
+    result = plan_day(
+        world=world,
+        travel=travel,
+        on_date=MONDAY,
+        candidate_job_ids=["j-maria"],
+        params=params,
+    )
+    assert "j-maria" in result.released_promises, "an unkeepable promise breaks visibly"
+    stop = next(s for r in result.routes for s in r.stops if s.job_id == "j-maria")
+    local_out = stop.departure.astimezone(BUSINESS_TZ)
+    local_in = stop.arrival.astimezone(BUSINESS_TZ)
+    assert (
+        local_out.hour < 10
+        or (local_out.hour == 10 and local_out.minute == 0)
+        or (local_in.hour >= 11)
+    ), f"the stop stays clear of the 10-11 hole: {local_in:%H:%M}-{local_out:%H:%M}"
+
+    # The independent checker tells the honest story: the moved promise, never a
+    # fitter scheduled through their own absence.
+    from krama.domain.invariants import ValidationConfig, validate_plan
+
+    codes = {
+        v.code.value
+        for v in validate_plan(
+            as_plan(result), world, travel, ValidationConfig(business_tz=BUSINESS_TZ)
+        )
+    }
+    assert "worker_unavailable" not in codes, codes
+    assert "confirmed_window_moved" in codes, codes

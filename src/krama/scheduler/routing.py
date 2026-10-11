@@ -60,6 +60,7 @@ def _depart_and_arrive(
     origin: Location,
     job: Job,
     ready_at: datetime,
+    window_released: bool = False,
 ) -> tuple[TravelLeg, datetime]:
     """Choose a departure time and the resulting arrival.
 
@@ -77,7 +78,12 @@ def _depart_and_arrive(
     """
     leg = travel.leg(origin, job.location, ready_at)
     naive_arrival = ready_at + timedelta(minutes=leg.minutes)
-    target = _earliest_start(job, naive_arrival)
+    # A RELEASED promise is served when the crew gets there, not when the window
+    # says. The solver only releases when the window genuinely cannot be kept
+    # (and prices it); waiting for it anyway re-broke a fitter's availability -
+    # Priya's freed 7:30 start was "politely" pushed to 8:00, straight into the
+    # dentist appointment the early start existed to avoid.
+    target = naive_arrival if window_released else _earliest_start(job, naive_arrival)
     if target <= naive_arrival:
         return leg, target
 
@@ -105,6 +111,7 @@ def materialize_route(
     on_date: date,
     job_sequence: Sequence[JobId],
     shift_start: datetime,
+    released: frozenset[JobId] = frozenset(),
 ) -> CrewRoute:
     """Replay a job sequence against the travel oracle to produce concrete stops.
 
@@ -118,14 +125,18 @@ def materialize_route(
 
     for job_id in job_sequence:
         job = world.jobs[job_id]
-        leg, arrival = _depart_and_arrive(travel, position, job, clock)
+        leg, arrival = _depart_and_arrive(
+            travel, position, job, clock, window_released=job_id in released
+        )
         fresh_run = False
         break_minutes, break_miles = 0, 0.0
         idle = arrival - timedelta(minutes=leg.minutes) - clock
         if stops and idle >= timedelta(minutes=RUN_BREAK_AFTER_MINUTES):
             home_leg = travel.leg(position, van.home_depot, clock)
             ready_at_shop = clock + timedelta(minutes=home_leg.minutes)
-            out_leg, out_arrival = _depart_and_arrive(travel, van.home_depot, job, ready_at_shop)
+            out_leg, out_arrival = _depart_and_arrive(
+                travel, van.home_depot, job, ready_at_shop, window_released=job_id in released
+            )
             # Only split when the round trip genuinely fits the gap - a depot on
             # the far side of town must not make the customer later.
             if out_arrival <= arrival:

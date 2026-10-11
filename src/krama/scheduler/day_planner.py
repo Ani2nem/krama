@@ -1236,6 +1236,11 @@ def plan_day(
     # ------------------------------------------------------------------ extract
     routes: list[CrewRoute] = []
     scheduled: set[JobId] = set()
+    released_ids = frozenset(
+        job.id
+        for job in jobs
+        if job.commitment_state is CommitmentState.CONFIRMED and solver.value(released[job.id])
+    )
     for k in range(num_crews):
         van_id = van_of(k)
         if not solver.boolean_value(crew_active[k]):
@@ -1261,6 +1266,7 @@ def plan_day(
                 on_date=on_date,
                 job_sequence=[job.id for job in sequence],
                 shift_start=day_start + timedelta(minutes=shift_start_min),
+                released=released_ids,
             )
         )
 
