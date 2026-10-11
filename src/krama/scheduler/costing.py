@@ -106,6 +106,7 @@ def cost_route(
     overtime_minutes = 0
     if day_end is not None:
         end_local = _local(day_end, tz)
+        start_local = _local(day_start, tz)
         for worker_id in route.worker_ids:
             worker = world.workers.get(worker_id)
             if worker is None:
@@ -116,8 +117,12 @@ def cost_route(
             shift_end = end_local.replace(
                 hour=hours.end.hour, minute=hours.end.minute, second=0, microsecond=0
             )
-            if end_local > shift_end:
-                overtime_minutes += int((end_local - shift_end).total_seconds() // 60)
+            # Minutes WORKED past the close, not minutes elapsed since it: an
+            # evening session that leaves the shop at five pays its crew from
+            # five, not from three. Mirrors the solver's objective exactly.
+            overtime_from = max(start_local, shift_end)
+            if end_local > overtime_from:
+                overtime_minutes += int((end_local - overtime_from).total_seconds() // 60)
 
     lateness_minutes = 0
     for stop in route.stops:
