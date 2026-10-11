@@ -466,3 +466,32 @@ def test_a_reschedule_needs_a_day_not_a_time(world):
     (window,) = timed_event.new_windows
     assert window.start.astimezone(TZ).hour == 14
     assert window.end.astimezone(TZ).hour == 16
+
+
+def test_a_correction_clears_the_old_absence_and_records_the_new(world):
+    """ "Actually out 11 to 1" must not merely restore (forgetting the absence) or
+    merely record (stacking 11-1 on the stale 11-12). It is both: clear, then
+    record the corrected hours."""
+    result = run_triage(
+        world,
+        {
+            "events": [
+                {"kind": "worker-restored", "target": "w-priya"},
+                {
+                    "kind": "worker-unavailable",
+                    "target": "w-priya",
+                    "at": "11:00",
+                    "until": "13:00",
+                },
+            ],
+            "question": "",
+            "summary": "Priya corrected to 11-13.",
+        },
+        text="just asked Priya - she's actually out 11 to 1, fine the rest of the day",
+    )
+    assert not result.needs_dispatcher
+    kinds = [e.type for e in result.events]
+    assert kinds == ["worker_restored", "worker_unavailable"]
+    outage = result.events[1]
+    assert outage.from_time.astimezone(TZ).hour == 11
+    assert outage.until_time is not None and outage.until_time.astimezone(TZ).hour == 13
