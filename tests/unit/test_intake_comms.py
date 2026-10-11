@@ -558,3 +558,28 @@ def test_the_access_answer_is_heard_even_when_the_model_forgets():
     ):
         assert pattern.search(said), said
     assert not pattern.search("the glass is broken and we open at nine")
+
+
+def test_the_parking_situation_is_heard_even_when_the_box_is_unticked():
+    """Rosa said "you have to park on the street out front"; the model marked the
+    access question answered but left site_access blank, so the question vanished
+    AND the minutes never landed. The classification is checkable, so it is
+    checked."""
+    from krama.agents.intake import CallExtraction, _hear_the_parking_situation
+
+    blank = CallExtraction()
+    said = {
+        "you have to park on the street out front": "street_parking",
+        "there's no lot here": "street_parking",
+        "it's alley access only": "difficult",
+        "there's a loading dock around back": "easy",
+        "park right at the door": "easy",
+        # An alley with a dock is still an alley - the hard read wins.
+        "alley in the back with a loading dock": "difficult",
+    }
+    for text, expected in said.items():
+        assert _hear_the_parking_situation(blank, text).site_access == expected, text
+    assert _hear_the_parking_situation(blank, "the glass is cracked").site_access == ""
+    # The model's own answer is never second-guessed.
+    told = CallExtraction(site_access="easy")
+    assert _hear_the_parking_situation(told, "alley only").site_access == "easy"
