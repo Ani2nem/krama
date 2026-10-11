@@ -104,8 +104,14 @@ Rules:
   recorded correctly as it stands, leave `question` empty. Colour and context - whether
   a tow is en route, how bad the damage looks - do not change what gets recorded, and
   asking about them buries the questions that do.
-- A plain statement of fact - "van 3 won't start", "Priya is out sick", "traffic is
-  terrible on the 287" - is complete as spoken. Record it; never ask about one.
+- A plain statement that something IS out - "van 3 won't start", "Priya is out
+  sick", "traffic is terrible on the 287" - is complete as spoken: record it, ask
+  nothing. A MAYBE is not an outage: "making a noise", "might need looking at",
+  "feels off" records nothing and earns the one question that settles it.
+- A CORRECTION to an absence ("actually out 11 to 1", "she's fine the rest of the
+  day") is TWO events: worker-restored to clear what was recorded, then
+  worker-unavailable with the corrected hours. Restoring alone forgets the absence;
+  recording alone stacks the new hours on top of the old ones.
 - Times are 24-hour HH:MM. "half ten" is 10:30, "quarter to noon" is 11:45.
 - job-overran needs `minutes`. traffic-delay needs `multiplier`.
 - If no time is given, leave `at` empty. It defaults to now, which is almost always
@@ -178,6 +184,21 @@ EXAMPLES: tuple[Example, ...] = (
         output=TriageOutcome(
             events=[TriagedEvent(kind="job-overran", target="j-403", minutes=120)],
             summary="Patel shower door running 120 minutes over.",
+        ),
+    ),
+    Example(
+        text=(
+            "just asked Priya - she's actually out 11 to 1, not 11 to 12, "
+            "available the rest of the day"
+        ),
+        output=TriageOutcome(
+            events=[
+                TriagedEvent(kind="worker-restored", target="w-priya"),
+                TriagedEvent(
+                    kind="worker-unavailable", target="w-priya", at="11:00", until="13:00"
+                ),
+            ],
+            summary="Priya's absence corrected to 11:00 - 13:00.",
         ),
     ),
     Example(
