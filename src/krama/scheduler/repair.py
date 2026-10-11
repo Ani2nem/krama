@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from copy import copy
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from krama.domain.diff import PlanDiff, diff_plans
 from krama.domain.enums import CommitmentState
@@ -135,6 +135,36 @@ def locked_jobs(world: WorldState) -> list[JobId]:
     )
 
 
+def underway_jobs(baseline: PlanVersion | None, world: WorldState, now: datetime) -> list[JobId]:
+    """Jobs the CLOCK has dispatched, whether or not anyone typed the paperwork.
+
+    `locked_jobs` trusts the event log: a stop is immovable once somebody recorded
+    job-dispatched. Nobody records that minute-by-minute on a real morning - and a
+    re-plan at 8:30 was free to hand Priya's 8-to-10 install to Dan while she stood
+    in the customer's hallway. So the committed plan's own times are consulted too:
+    once a stop's crew would already be rolling toward it (departure time reached),
+    the job is as physically fixed as a dispatched one, and it is carved out and
+    carried verbatim instead of re-planned.
+    """
+    if baseline is None:
+        return []
+    out: set[JobId] = set()
+    for route in baseline.routes:
+        for stop in route.stops:
+            rolling_from = stop.arrival - timedelta(
+                minutes=stop.run_break_minutes + stop.travel_minutes_from_prev
+            )
+            # In motion NOW: rolling toward the door or standing inside it. A stop
+            # already finished is history the solver cannot re-place anyway, and a
+            # stop later today is still honestly movable - the lock is exactly as
+            # wide as the physical fact it models.
+            if rolling_from <= now < stop.departure:
+                job = world.jobs.get(stop.job_id)
+                if job is not None and job.is_active:
+                    out.add(stop.job_id)
+    return sorted(out)
+
+
 def repair_plan(
     *,
     world: WorldState,
@@ -144,10 +174,11 @@ def repair_plan(
     params: SolveParams,
     horizon_params: HorizonParams,
     strategies: Sequence[RepairStrategy] = STRATEGIES,
+    also_locked: Sequence[JobId] = (),
 ) -> RepairOptions:
     """Produce one repaired candidate per strategy, each diffed against the committed plan."""
     candidates: list[RepairCandidate] = []
-    locked = locked_jobs(world)
+    locked = sorted({*locked_jobs(world), *also_locked})
     planning_world, carried = carve_out_locked(world, baseline, locked)
 
     for index, strategy in enumerate(strategies):

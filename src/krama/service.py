@@ -51,6 +51,7 @@ from krama.scheduler.repair import (
     carve_out_locked,
     locked_jobs,
     repair_plan,
+    underway_jobs,
 )
 from krama.scheduler.travel.base import OverrideAdjustedProvider, TravelProvider
 from krama.scheduler.travel.factory import TravelMode, build_travel
@@ -220,6 +221,7 @@ class DispatchService:
         allow_overtime: bool = True,
         world: WorldState | None = None,
         pinned_workers: Mapping[JobId, tuple[WorkerId, ...]] | None = None,
+        now: datetime | None = None,
     ) -> PlanResult:
         """Plan the rolling horizon and check it. Does not commit.
 
@@ -236,7 +238,10 @@ class DispatchService:
             horizon_params = self.horizon_params()
 
             head = self.head()
-            locked = locked_jobs(state)
+            # Locked by paperwork OR by the clock: a crew already rolling toward a
+            # stop is not the solver's to reassign, dispatched event or no.
+            wall = now if now is not None else datetime.now(self.tz)
+            locked = sorted({*locked_jobs(state), *underway_jobs(head, state, wall)})
             carried: tuple[CrewRoute, ...] = ()
             planning_state = state
             if head is not None and locked:
@@ -302,6 +307,7 @@ class DispatchService:
         with span("plan.repair", baseline=baseline.id) as active:
             state = world if world is not None else self.world()
             options = repair_plan(
+                also_locked=underway_jobs(baseline, state, datetime.now(self.tz)),
                 world=state,
                 travel=self.travel(state),
                 baseline=baseline,
@@ -344,6 +350,14 @@ class DispatchService:
         """
         with span("booking.slots", service=draft.service_type.value) as active:
             state = self.world()
+            head = self.head()
+            # A quote mid-morning must price around the crew that is already out,
+            # not silently move them: in-flight work is carved into consumed
+            # capacity exactly as the committed re-plan does.
+            wall = not_before if not_before is not None else datetime.now(self.tz)
+            in_flight = sorted({*locked_jobs(state), *underway_jobs(head, state, wall)})
+            if head is not None and in_flight:
+                state, _carried = carve_out_locked(state, head, in_flight)
             horizon_params = self.horizon_params()
             rostered = {
                 hours.weekday for worker in state.workers.values() for hours in worker.working_hours
