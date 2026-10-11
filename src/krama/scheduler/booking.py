@@ -364,7 +364,9 @@ def suggest_booking_slots(
 
         before = route.stops[: list(route.stops).index(stop)]
         previous = candidate_world.jobs.get(before[-1].job_id) if before else None
-        from_label = f"{previous.customer_name}'s" if previous else "the shop"
+        from_label = (
+            "the shop" if stop.fresh_run or previous is None else f"{previous.customer_name}'s"
+        )
         trial_costs = [cost_route(r, candidate_world, business, tz) for r in trial.routes]
         trial_cost = sum(_route_operating_cost(c) for c in trial_costs)
         trial_overtime = sum(c.overtime_minutes for c in trial_costs)

@@ -86,7 +86,8 @@ def cost_route(
     previous_departure: datetime | None = None
     for stop in route.stops:
         expected = (
-            previous_departure + timedelta(minutes=stop.travel_minutes_from_prev)
+            previous_departure
+            + timedelta(minutes=stop.run_break_minutes + stop.travel_minutes_from_prev)
             if previous_departure
             else None
         )

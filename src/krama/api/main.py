@@ -1083,7 +1083,12 @@ def run_intake(request: TextRequest) -> IntakeView:
             # compute the in-hours alternatives too and hand them over separately -
             # the board shows them behind a tab, so the first thing on screen is what
             # was asked for and the cheaper options are one click deep, not mixed in.
-            if slots and result.earliest_hour is not None and result.earliest_hour >= 12:
+            #
+            # ESPECIALLY when the stated hours got zero slots and the next step is
+            # asking the crew: "let me check with the crew - but mornings are open
+            # now, and cheaper" is a sentence the dispatcher can say before anyone
+            # is put on hold, so the alternatives are computed for that case too.
+            if result.earliest_hour is not None and result.earliest_hour >= 12:
                 relaxed = svc.booking_slots(
                     result.draft,
                     start,
@@ -1091,7 +1096,7 @@ def run_intake(request: TextRequest) -> IntakeView:
                     not_before=not_before,
                     allowed_weekdays=days,
                 )
-                ceiling = min(s.quote_total for s in slots)
+                ceiling = min((s.quote_total for s in slots), default=float("inf"))
                 for best in sorted(relaxed.slots, key=lambda r: r.marginal_cost)[:3]:
                     priced = _pricing(
                         result.draft, svc.business, best.marginal_cost, best.overtime_minutes
@@ -1446,6 +1451,7 @@ def _suggest_crew_ask(
         until_label=clock(until),
         candidate_ids=[w.id for w in candidates],
         candidate_names=[w.name for w in candidates],
+        crew_size=max(1, draft.crew_size),
     )
 
 
@@ -1822,6 +1828,7 @@ def open_ask(request: AskRequest) -> dict[str, str]:
                     until_time=until,
                     candidate_ids=tuple(request.candidate_ids),
                     detail=request.detail,
+                    crew_size=max(1, request.crew_size),
                 )
             ]
         )

@@ -336,6 +336,9 @@ class CrewAskOpened(EventBase):
     until_time: datetime
     candidate_ids: tuple[WorkerId, ...]
     detail: str = ""
+    #: How many of the candidates must say yes before the job is actually
+    #: coverable. Two fitters wanted means one yes is still a refusal.
+    crew_size: int = 1
 
 
 class CrewAskClosed(EventBase):

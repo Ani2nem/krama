@@ -101,6 +101,7 @@ class CrewAsk(Frozen):
     until_time: datetime
     candidate_ids: tuple[WorkerId, ...]
     detail: str = ""
+    crew_size: int = 1
 
 
 class TrafficOverride(Frozen):
@@ -408,6 +409,7 @@ def _apply(state: WorldState, event: Event) -> None:
                 until_time=event.until_time,
                 candidate_ids=event.candidate_ids,
                 detail=event.detail,
+                crew_size=event.crew_size,
             )
 
         case CrewAskClosed():

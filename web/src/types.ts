@@ -136,6 +136,7 @@ export interface CrewAskSuggestion {
   until_label: string;
   candidate_ids: string[];
   candidate_names: string[];
+  crew_size: number;
 }
 
 export interface CrewAsk {
@@ -148,6 +149,7 @@ export interface CrewAsk {
   transcript: string;
   candidates: { id: string; name: string }[];
   extended: string[];
+  crew_size: number;
 }
 
 export interface OvertimeOffer {

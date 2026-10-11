@@ -329,8 +329,12 @@ export default function App() {
                       </button>
                     ))}
                   <button
-                    disabled={busy}
-                    title="re-price their call with the agreed overtime - the slots land in the call box on the left"
+                    disabled={busy || ask.extended.length < ask.crew_size}
+                    title={
+                      ask.extended.length < ask.crew_size
+                        ? `this job needs ${ask.crew_size} fitters staying late - ${ask.crew_size - ask.extended.length} more yes${ask.crew_size - ask.extended.length === 1 ? "" : "es"} first`
+                        : "re-price their call with the agreed overtime - the slots land in the call box on the left"
+                    }
                     onClick={() =>
                       setPrefill({ text: ask.transcript, nonce: Date.now(), run: true })
                     }
@@ -340,7 +344,7 @@ export default function App() {
                   <button
                     className="danger"
                     disabled={busy}
-                    title="done - booked, or the customer was told no"
+                    title="takes this off the board - nobody stays late, and the customer knows"
                     onClick={async () => {
                       setBusy(true);
                       try {
@@ -353,7 +357,7 @@ export default function App() {
                       }
                     }}
                   >
-                    Resolve
+                    Told them no
                   </button>
                 </div>
               </div>

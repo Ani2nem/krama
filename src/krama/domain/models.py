@@ -272,6 +272,13 @@ class Stop(Frozen):
     departure: datetime
     travel_minutes_from_prev: int = Field(ge=0)
     travel_miles_from_prev: float = Field(ge=0)
+    #: True when the crew went back to the shop before this stop instead of
+    #: idling hours at the previous customer's kerb. travel_*_from_prev then
+    #: measures shop -> here, and run_break_* carries the trip home that ended
+    #: the previous run - real driving, so it is real money.
+    fresh_run: bool = False
+    run_break_minutes: int = Field(default=0, ge=0)
+    run_break_miles: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def _ordered(self) -> Stop:
@@ -297,11 +304,13 @@ class CrewRoute(Frozen):
 
     @property
     def total_travel_minutes(self) -> int:
-        return sum(s.travel_minutes_from_prev for s in self.stops) + self.return_to_depot_minutes
+        legs = sum(s.travel_minutes_from_prev + s.run_break_minutes for s in self.stops)
+        return legs + self.return_to_depot_minutes
 
     @property
     def total_travel_miles(self) -> float:
-        return sum(s.travel_miles_from_prev for s in self.stops) + self.return_to_depot_miles
+        legs = sum(s.travel_miles_from_prev + s.run_break_miles for s in self.stops)
+        return legs + self.return_to_depot_miles
 
     @property
     def job_ids(self) -> tuple[JobId, ...]:
