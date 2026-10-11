@@ -1005,6 +1005,11 @@ def run_intake(request: TextRequest) -> IntakeView:
             address=call.address if call else "",
             service_type=call.service_type if call else "",
             duration_minutes=result.estimate.duration_min if result.estimate else 0,
+            access_note=(
+                f"+{result.estimate.access_buffer_min} min for {result.estimate.access_label}"
+                if result.estimate and result.estimate.access_buffer_min
+                else ""
+            ),
             duration_confidence=result.estimate.confidence_min if result.estimate else 0,
             crew_size=result.estimate.crew_size if result.estimate else 0,
             certifications=(

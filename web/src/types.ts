@@ -234,6 +234,7 @@ export interface Draft {
   commitment_quotes: string[];
   lead_time_days: number;
   site_notes: string;
+  access_note: string;
   lat: number | null;
   lon: number | null;
 }

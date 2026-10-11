@@ -157,10 +157,31 @@ class Estimate:
     lead_time_days: int = 0
     requires_customer_present: bool = False
     missing_details: tuple[str, ...] = field(default_factory=tuple)
+    #: Minutes added for how close the van can get - already inside duration_min,
+    #: carried separately so the card can say "+15 for street parking".
+    access_buffer_min: int = 0
+    access_label: str = ""
 
     @property
     def needs_ordering(self) -> bool:
         return self.lead_time_days > 0
+
+
+#: What hard access costs in crew-minutes. Carrying a storefront pane from a
+#: street bay, or up from an alley, is real labour on every such job - so it is
+#: scheduled and billed like the rest of the work instead of living as a prose
+#: note the solver never reads. The intake agent only ever CLASSIFIES what the
+#: caller said; the minutes are fixed here, where they can be argued with.
+ACCESS_BUFFER_MIN: dict[str, int] = {
+    "easy": 0,  # driveway, loading dock, parking at the door
+    "street_parking": 15,  # park on the street, carry to the door
+    "difficult": 25,  # alley only, stairs, upper floor, long carry
+}
+
+ACCESS_LABEL: dict[str, str] = {
+    "street_parking": "street parking",
+    "difficult": "tricky access",
+}
 
 
 def lookup(
@@ -169,6 +190,7 @@ def lookup(
     pane_count: int = 1,
     glass_type: GlassType | None = None,
     known_details: frozenset[str] = frozenset(),
+    site_access: str = "",
 ) -> Estimate:
     """Resolve a service type into concrete scheduling facts.
 
@@ -178,7 +200,11 @@ def lookup(
     """
     entry = CATALOG[service_type]
     extra = max(0, pane_count - 1)
-    duration = entry.typical_duration_min + extra * entry.per_extra_pane_min
+    access_buffer = ACCESS_BUFFER_MIN.get(site_access, 0)
+    duration = entry.typical_duration_min + extra * entry.per_extra_pane_min + access_buffer
+    if site_access:
+        # The caller answered the access question, whatever words they used.
+        known_details = known_details | {"street or alley access"}
     low, high = entry.duration_range
     confidence = max(15, (high - low) // 2)
 
@@ -202,6 +228,8 @@ def lookup(
     return Estimate(
         entry=entry,
         duration_min=duration,
+        access_buffer_min=access_buffer,
+        access_label=ACCESS_LABEL.get(site_access, ""),
         confidence_min=confidence,
         crew_size=crew,
         required_certifications=frozenset(certifications),

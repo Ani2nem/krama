@@ -253,6 +253,16 @@ class CallExtraction(BaseModel):
         default="",
         description='Access details worth writing down: gate codes, parking, "alley only".',
     )
+    site_access: Literal["easy", "street_parking", "difficult", ""] = Field(
+        default="",
+        description=(
+            "How close the van can get, ONLY if the caller described it. "
+            "'easy': driveway, loading dock, or parking right at the door. "
+            "'street_parking': park on the street and carry to the door. "
+            "'difficult': alley only, stairs, upper floor, or a long carry. "
+            "Empty when they did not say."
+        ),
+    )
     details_covered: list[str] = Field(
         default_factory=list,
         description="Which of the catalogue's ask-about items the caller already answered.",
@@ -685,6 +695,11 @@ _ANSWERED_BY: dict[str, re.Pattern[str]] = {
     "ground floor or upstairs": re.compile(
         r"\bground floor|\bupstairs|\bdownstairs|\bfirst floor|\bsecond floor", re.I
     ),
+    "street or alley access": re.compile(
+        r"\balley\b|street parking|park (?:on|in) the street|loading dock|\bdriveway\b"
+        r"|park (?:right )?(?:at|by) the door",
+        re.I,
+    ),
 }
 
 
@@ -830,6 +845,7 @@ def intake(
                     pane_count=call.pane_count or 1,
                     glass_type=_glass_type(call.glass_type),
                     known_details=frozenset(call.details_covered),
+                    site_access=call.site_access,
                 )
 
         commitment = commitment_cost_for(call.commitment_signals, business)
