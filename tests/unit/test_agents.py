@@ -540,3 +540,52 @@ def test_a_batch_replays_in_the_order_it_was_said(world):
     assert [(o.from_time.hour, (o.until_time or o.from_time).hour) for o in remaining] == [
         (11, 13)
     ], remaining
+
+
+def test_a_mis_stamped_past_event_cannot_outrank_a_later_fix():
+    """One batch was once stamped with the outage's own FUTURE time (Monday
+    11:00, recorded on Saturday). Under recorded_at ordering those events
+    replayed after every later correction, forever - the stale absence kept
+    resurrecting. The fold replays the log in append order now: what was
+    appended later wins, whatever its stamp claims."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from krama.cli.events import build_event
+    from krama.domain.state import fold
+    from krama.fixtures.sample_business import seed_events
+
+    tz = ZoneInfo("America/Chicago")
+    monday_11 = datetime(2026, 10, 12, 11, 0, tzinfo=tz)
+    saturday = datetime(2026, 10, 10, 17, 30, tzinfo=tz)
+
+    poisoned = build_event(
+        "worker-unavailable",
+        "w-priya",
+        at=monday_11,  # stamped with the fact's own future time - the old bug
+        dispatch_id="d-old",
+        until=monday_11 + timedelta(hours=1),
+    )
+    fix_restore = build_event(
+        "worker-restored",
+        "w-priya",
+        at=saturday,
+        dispatch_id="d-fix",
+        recorded_at=saturday,
+    )
+    fix_outage = build_event(
+        "worker-unavailable",
+        "w-priya",
+        at=monday_11,
+        dispatch_id="d-fix",
+        recorded_at=saturday + timedelta(microseconds=1),
+        until=monday_11 + timedelta(hours=2),
+    )
+
+    world = fold([*seed_events(), poisoned, fix_restore, fix_outage])
+    spans = [
+        (o.from_time.astimezone(tz).hour, (o.until_time or o.from_time).astimezone(tz).hour)
+        for o in world.worker_outages.get("w-priya", [])
+        if o.from_time.astimezone(tz).date().isoformat() == "2026-10-12"
+    ]
+    assert spans == [(11, 13)], f"the correction stands, the stale absence stays dead: {spans}"
