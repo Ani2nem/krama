@@ -194,7 +194,9 @@ EXAMPLES: tuple[Example, ...] = (
         output=TriageOutcome(
             events=[
                 TriagedEvent(kind="worker-restored", target="w-priya"),
-                TriagedEvent(kind="worker-unavailable", target="w-priya", at="11:00", until="13:00"),
+                TriagedEvent(
+                    kind="worker-unavailable", target="w-priya", at="11:00", until="13:00"
+                ),
             ],
             summary="Priya's absence corrected to 11:00 - 13:00.",
         ),
