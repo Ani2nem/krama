@@ -13,7 +13,7 @@ between "here are your events" and "I need to know which van first".
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, tzinfo
+from datetime import date, datetime, tzinfo
 
 from krama.agents.a2a.transport import Handler, InProcessTransport
 from krama.agents.a2a.types import (
@@ -84,6 +84,10 @@ class TriageContext:
     world: WorldState
     on_date: date
     tz: tzinfo
+    #: Wall time at the moment of the note. Without it triage falls back to
+    #: world.as_of - the LAST EVENT'S clock - which is the exact stale-stamp trap
+    #: triage's own docstring warns about, quietly reintroduced by this wrapper.
+    now: datetime | None = None
 
 
 def _completed(task: Task, artifact: Artifact, text: str) -> Task:
@@ -112,7 +116,14 @@ def _needs_input(task: Task, question: str, artifact: Artifact | None = None) ->
 def triage_handler(provider: LLMProvider, context: TriageContext) -> Handler:
     def handle(task: Task) -> Task:
         note = task.history[-1].text_content if task.history else ""
-        result = triage(provider, context.world, note, on_date=context.on_date, tz=context.tz)
+        result = triage(
+            provider,
+            context.world,
+            note,
+            on_date=context.on_date,
+            tz=context.tz,
+            now=context.now,
+        )
         artifact = Artifact(
             name="events",
             parts=[

@@ -498,3 +498,45 @@ def test_a_correction_clears_the_old_absence_and_records_the_new(world):
     assert isinstance(outage, WorkerUnavailable)
     assert outage.from_time.astimezone(TZ).hour == 11
     assert outage.until_time is not None and outage.until_time.astimezone(TZ).hour == 13
+
+
+def test_a_batch_replays_in_the_order_it_was_said(world):
+    """ "Restore, then the corrected hours" came back shuffled: every event in the
+    batch carried the same recorded_at, so the fold's tiebreak was the random
+    event id - and the stale absence outlived its own correction. Each event now
+    records its own learned-instant, and occurred_at stays the fact's own time."""
+
+    from krama.domain.state import _apply
+
+    result = run_triage(
+        world,
+        {
+            "events": [
+                {"kind": "worker-restored", "target": "w-priya"},
+                {
+                    "kind": "worker-unavailable",
+                    "target": "w-priya",
+                    "at": "11:00",
+                    "until": "13:00",
+                },
+            ],
+            "question": "",
+            "summary": "Priya corrected to 11-13.",
+        },
+        text="she's actually out 11 to 1, fine the rest of the day",
+    )
+    first, second = result.events
+    assert first.recorded_at < second.recorded_at, "said first, learned first"
+
+    # Replayed over a stale 11-12 absence, the correction leaves exactly 11-13.
+    from krama.domain.state import Unavailability
+
+    world.worker_outages["w-priya"] = [
+        Unavailability(from_time=_at(0, 11), until_time=_at(0, 12), reason="stale")
+    ]
+    for event in sorted(result.events, key=lambda e: (e.recorded_at, e.event_id)):
+        _apply(world, event)
+    remaining = world.worker_outages["w-priya"]
+    assert [(o.from_time.hour, (o.until_time or o.from_time).hour) for o in remaining] == [
+        (11, 13)
+    ], remaining
