@@ -315,7 +315,11 @@ def triage(
                 return reported_at
             return datetime.combine(on_date, parsed, tzinfo=tz)
 
-        for item in outcome.events:
+        for index, item in enumerate(outcome.events):
+            # Each event in the batch gets its own recorded instant, so the fold
+            # replays them in the order they were said - "restore, then the
+            # corrected hours" must never come back shuffled by a random id.
+            learned = reported_at + timedelta(microseconds=index)
             if item.target and not _known_target(world, item.kind, item.target):
                 # The model named something that does not exist. A dictionary lookup
                 # catches this; nothing about the model's confidence would have.
@@ -346,6 +350,7 @@ def triage(
                             item.target or None,
                             at=reported_at,
                             dispatch_id=dispatch_id,
+                            recorded_at=learned,
                             window_start=opens,
                             window_end=closes,
                             reason=item.reason,
@@ -358,6 +363,7 @@ def triage(
                         item.target or None,
                         at=moment(item.at),
                         dispatch_id=dispatch_id,
+                        recorded_at=learned,
                         until=moment(item.until) if item.until else None,
                         minutes=item.minutes,
                         multiplier=item.multiplier,

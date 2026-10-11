@@ -38,13 +38,17 @@ class EventArgumentError(ValueError):
     """The command line did not carry enough to build a valid event."""
 
 
-def _envelope(at: datetime, dispatch_id: str) -> dict[str, object]:
+def _envelope(
+    at: datetime, dispatch_id: str, recorded_at: datetime | None = None
+) -> dict[str, object]:
     return {
         "event_id": f"e-{uuid.uuid4().hex[:10]}",
-        # occurred_at and recorded_at both default to the given moment here; the
-        # distinction earns its keep when a real channel reports something late.
+        # occurred_at is the fact's own moment ("out from 11:00"); recorded_at is
+        # when we LEARNED it. Conflating them stamped a Saturday correction with
+        # Monday 11:00, tied three events to the second, and left replay order to
+        # the random event id - which is how a stale absence outlived its fix.
         "occurred_at": at,
-        "recorded_at": at,
+        "recorded_at": recorded_at or at,
         "dispatch_id": dispatch_id,
         "actor": "dispatcher:cli",
     }
@@ -62,6 +66,7 @@ def build_event(
     *,
     at: datetime,
     dispatch_id: str,
+    recorded_at: datetime | None = None,
     until: datetime | None = None,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
@@ -71,7 +76,7 @@ def build_event(
     reason: str = "",
 ) -> Event:
     """Construct one event, or raise with a message a human can act on."""
-    base = _envelope(at, dispatch_id)
+    base = _envelope(at, dispatch_id, recorded_at)
 
     builders: dict[str, Callable[[], Event]] = {
         "van-unavailable": lambda: VanUnavailable(

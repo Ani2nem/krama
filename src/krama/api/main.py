@@ -676,6 +676,7 @@ def record_event(request: EventRequest) -> dict[str, str]:
                 request.target or None,
                 at=at,
                 dispatch_id=dispatch_id,
+                recorded_at=datetime.now(svc.tz),
                 until=_clock(svc, request.until, None),
                 window_start=_clock(svc, request.window_start, None),
                 window_end=_clock(svc, request.window_end, None),
@@ -803,7 +804,9 @@ def run_triage(request: TextRequest) -> TriageView:
         except ServiceError as exc:
             raise _fail(exc, 409) from exc
 
-        context = TriageContext(world=world, on_date=_default_start(svc), tz=svc.tz)
+        context = TriageContext(
+            world=world, on_date=_default_start(svc), tz=svc.tz, now=datetime.now(svc.tz)
+        )
         transport = build_transport(build_llm(), triage_context=context)
         task = transport.send(
             transport.discover(TRIAGE_SKILL),
