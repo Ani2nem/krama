@@ -489,9 +489,12 @@ def test_a_correction_clears_the_old_absence_and_records_the_new(world):
         },
         text="just asked Priya - she's actually out 11 to 1, fine the rest of the day",
     )
+    from krama.domain.events import WorkerUnavailable
+
     assert not result.needs_dispatcher
     kinds = [e.type for e in result.events]
     assert kinds == ["worker_restored", "worker_unavailable"]
     outage = result.events[1]
+    assert isinstance(outage, WorkerUnavailable)
     assert outage.from_time.astimezone(TZ).hour == 11
     assert outage.until_time is not None and outage.until_time.astimezone(TZ).hour == 13
