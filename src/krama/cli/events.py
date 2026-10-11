@@ -17,6 +17,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from krama.domain.events import (
+    CustomerRescheduled,
     Event,
     JobCancelled,
     JobCompleted,
@@ -111,6 +112,19 @@ def build_event(
             reason=reason,
         ),
         "job-dispatched": lambda: JobDispatched(**base, job_id=_require(target, "a job id")),
+        "customer-rescheduled": lambda: CustomerRescheduled(
+            **base,
+            job_id=_require(target, "a job id"),
+            # The new window may be a whole day - "sometime Tuesday" is complete.
+            # The solver picks the exact slot, the same way it does for a new
+            # booking; demanding a time here was the bug.
+            new_windows=(
+                TimeWindow(
+                    start=_require(window_start, "--window-start"),
+                    end=_require(window_end, "--window-end"),
+                ),
+            ),
+        ),
         "job-cancelled": lambda: JobCancelled(
             **base, job_id=_require(target, "a job id"), reason=reason
         ),

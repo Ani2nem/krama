@@ -2232,3 +2232,150 @@ def test_an_ask_knows_how_many_yeses_make_the_hours_real(client: TestClient):
     )
     assert ask["crew_size"] == 2
     assert len(ask["extended"]) < ask["crew_size"], "one yes short - not bookable yet"
+
+
+def test_a_crew_on_site_is_not_the_solvers_to_reassign(client: TestClient, monkeypatch):
+    """Priya is standing in the customer's hallway at 8:30 when a new call books.
+    The re-plan must carry her stop exactly as committed - same person, same time -
+    because no optimisation is worth a fitter vanishing mid-install. The lock is
+    the clock's, not the paperwork's: nobody types job-dispatched minute by minute."""
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    from krama.api.main import _default_start, service
+    from krama.scheduler.repair import underway_jobs
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday = _date.fromisoformat(_next_monday())
+    draft = {
+        "customer_name": "Morning install",
+        "phone": "9130001111",
+        "address": "somewhere",
+        "service_type": "residential_window_replacement",
+        "duration_minutes": 120,
+        "duration_confidence": 60,
+        "crew_size": 1,
+        "certifications": ["residential_glazing"],
+        "commitment_cost": 0,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    first = client.post(
+        "/api/book",
+        json={
+            "draft": draft,
+            "date": monday.isoformat(),
+            "arrival": "08:00",
+            "crew_ids": ["w-priya"],
+        },
+    ).json()
+    assert first["status"] == "scheduled"
+
+    svc = service()
+
+    # A second customer books the same day. Booked on Saturday, nothing is in
+    # motion yet, so this re-plan may shuffle crews freely - that is fine. What
+    # it commits becomes the plan the crews ROLL OUT ON come Monday morning.
+    client.post(
+        "/api/book",
+        json={
+            "draft": {**draft, "customer_name": "Afternoon caller", "phone": "9130002222"},
+            "date": monday.isoformat(),
+            "arrival": "13:00",
+            "allow_duplicate": True,
+        },
+    )
+    head = svc.head()
+    assert head is not None
+    committed = next((r, s) for r in head.routes for s in r.stops if s.job_id == first["job_id"])
+    route_before, stop_before = committed
+
+    world = svc.world()
+    half_past_eight = _datetime.combine(monday, _datetime.min.time(), tzinfo=svc.tz).replace(
+        hour=8, minute=30
+    )
+    head = svc.head()
+    assert underway_jobs(head, world, half_past_eight) == [first["job_id"]], (
+        "at 8:30 the 8-to-10 stop is in motion; nothing else is"
+    )
+    seven = half_past_eight.replace(hour=7, minute=0)
+    assert first["job_id"] not in underway_jobs(head, world, seven), (
+        "at seven nobody has left yet - still the solver's to arrange"
+    )
+
+    replanned = svc.plan_week(start=_default_start(svc), now=half_past_eight)
+    carried = next(
+        (r, s) for r in replanned.plan.routes for s in r.stops if s.job_id == first["job_id"]
+    )
+    route_after, stop_after = carried
+    assert set(route_after.worker_ids) == set(route_before.worker_ids), (
+        "the fitter mid-install stays the fitter mid-install"
+    )
+    assert stop_after.arrival == stop_before.arrival, "and the stop does not move"
+
+
+def test_accepting_a_reschedule_replans_in_the_same_breath(client: TestClient, monkeypatch):
+    """ "Change James to Tuesday" was half an action: the event recorded, the old
+    Monday stop now wrong, Tuesday holding nothing, and a Rebuild button to find.
+    Accepting a reschedule re-places the booking immediately - and because only
+    the day was given, the planner picks the time, exactly like a fresh booking."""
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday = _date.fromisoformat(_next_monday())
+    tuesday = monday + _timedelta(days=1)
+    draft = {
+        "customer_name": "James",
+        "phone": "9132952960",
+        "address": "11100 Dunlavin Ct",
+        "service_type": "residential_window_replacement",
+        "duration_minutes": 120,
+        "duration_confidence": 60,
+        "crew_size": 1,
+        "certifications": ["residential_glazing"],
+        "commitment_cost": 0,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    booked = client.post(
+        "/api/book",
+        json={"draft": draft, "date": monday.isoformat(), "arrival": "09:00"},
+    ).json()
+    job_id = booked["job_id"]
+
+    from krama.api.main import service
+    from krama.domain.events import CustomerRescheduled
+    from krama.domain.models import TimeWindow
+
+    svc = service()
+    tz = svc.tz
+    from datetime import datetime as _datetime
+    from datetime import time as _time
+
+    event = CustomerRescheduled(
+        event_id="e-resched-1",
+        occurred_at=_datetime.now(tz),
+        recorded_at=_datetime.now(tz),
+        dispatch_id="d-test",
+        job_id=job_id,
+        new_windows=(
+            TimeWindow(
+                start=_datetime.combine(tuesday, _time(8), tzinfo=tz),
+                end=_datetime.combine(tuesday, _time(17), tzinfo=tz),
+            ),
+        ),
+    )
+    reply = client.post(
+        "/api/triage/accept", json={"events": [event.model_dump(mode="json")]}
+    ).json()
+    assert reply["recorded"] == 1
+    assert reply["note"] == "replanned around the new day"
+
+    plan = client.get("/api/plan").json()
+    placed = next(
+        (r["date"], s) for r in plan["routes"] for s in r["stops"] if s["job_id"] == job_id
+    )
+    on_date, _stop = placed
+    assert on_date == tuesday.isoformat(), "the booking lives on Tuesday now"
+    assert plan["violations"] == [], "and nothing is left contradicting the plan"

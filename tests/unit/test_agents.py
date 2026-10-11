@@ -408,3 +408,61 @@ def test_the_coordinator_is_told_the_costed_facts_not_the_plan(repair_options, p
     assert "jobs served" in prompt
     assert "customers who must be phoned" in prompt
     assert "arrival" not in prompt.lower()
+
+
+def test_a_reschedule_needs_a_day_not_a_time(world):
+    """ "Change James's booking to Tuesday sometime" is a complete instruction - a
+    fresh booking never demands a time, and a reschedule must not either. The day
+    becomes a whole-working-day window and the planner picks the slot."""
+    from datetime import date as _date
+
+    tuesday = _date.fromordinal(WEEK_START.toordinal() + 1)
+    result = run_triage(
+        world,
+        {
+            "events": [
+                {
+                    "kind": "customer-rescheduled",
+                    "target": "j-401",
+                    "day": tuesday.isoformat(),
+                }
+            ],
+            "question": "",
+            "summary": "Henderson moves to Tuesday.",
+        },
+        text="change the Henderson booking to tuesday sometime",
+    )
+    from krama.domain.events import CustomerRescheduled
+
+    assert not result.needs_dispatcher, result.question
+    event = result.events[0]
+    assert isinstance(event, CustomerRescheduled)
+    assert event.job_id == "j-401"
+    (window,) = event.new_windows
+    local_start = window.start.astimezone(TZ)
+    local_end = window.end.astimezone(TZ)
+    assert local_start.date() == tuesday and local_start.hour == 8
+    assert local_end.date() == tuesday and local_end.hour == 17
+
+    # A stated time narrows it to the usual two-hour arrival window.
+    timed = run_triage(
+        world,
+        {
+            "events": [
+                {
+                    "kind": "customer-rescheduled",
+                    "target": "j-401",
+                    "day": tuesday.isoformat(),
+                    "at": "14:00",
+                }
+            ],
+            "question": "",
+            "summary": "Henderson moves to Tuesday at two.",
+        },
+        text="henderson wants tuesday at 2pm instead",
+    )
+    timed_event = timed.events[0]
+    assert isinstance(timed_event, CustomerRescheduled)
+    (window,) = timed_event.new_windows
+    assert window.start.astimezone(TZ).hour == 14
+    assert window.end.astimezone(TZ).hour == 16

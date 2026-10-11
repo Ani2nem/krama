@@ -776,7 +776,7 @@ def run_triage(request: TextRequest) -> TriageView:
 
 
 @app.post("/api/triage/accept")
-def accept_triage(request: AcceptRequest) -> dict[str, int]:
+def accept_triage(request: AcceptRequest) -> dict[str, int | str]:
     """Record events a dispatcher reviewed. Nothing an agent produced is stored until
     a person has seen it."""
     from pydantic import TypeAdapter
@@ -791,8 +791,22 @@ def accept_triage(request: AcceptRequest) -> dict[str, int]:
             svc.apply_events(events)
         except (ServiceError, ValueError) as exc:
             raise _fail(exc, 400) from exc
+
+        # A reschedule is half an action until the board re-places the job: the
+        # old committed stop is now wrong and the new day holds nothing. Re-plan
+        # in the same breath - the exact solve the Rebuild banner runs - so
+        # "change James to Tuesday" lands on Tuesday without a second errand.
+        note = ""
+        if any(e.type == "customer_rescheduled" for e in events) and svc.head() is not None:
+            try:
+                plan = svc.plan_week(start=_default_start(svc))
+                head = svc.head()
+                svc.commit(plan.plan, expected_parent=head.id if head else None)
+                note = "replanned around the new day"
+            except ServiceError:
+                note = "recorded - press Rebuild to re-place the booking"
         broadcaster.publish("world", {"accepted": len(events)})
-        return {"recorded": len(events)}
+        return {"recorded": len(events), "note": note}
 
 
 def _pricing(

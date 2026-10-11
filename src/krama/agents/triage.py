@@ -20,7 +20,7 @@ that follows.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, tzinfo
+from datetime import date, datetime, time, timedelta, tzinfo
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -42,6 +42,7 @@ EventKind = Literal[
     "job-cancelled",
     "job-overran",
     "job-completed",
+    "customer-rescheduled",
     "traffic-delay",
 ]
 
@@ -58,6 +59,13 @@ class TriagedEvent(BaseModel):
     )
     at: str = Field(default="", description="Time it happened, HH:MM, 24-hour.")
     until: str = Field(default="", description="Time it ends, HH:MM, if stated.")
+    day: str = Field(
+        default="",
+        description=(
+            "For customer-rescheduled: the new DATE, YYYY-MM-DD. Resolve weekday "
+            "names against today's date. Empty for every other kind."
+        ),
+    )
     minutes: int | None = Field(
         default=None, description="Minutes over-run, or actual duration, when stated."
     )
@@ -100,6 +108,12 @@ Rules:
 - job-overran needs `minutes`. traffic-delay needs `multiplier`.
 - If no time is given, leave `at` empty. It defaults to now, which is almost always
   what the dispatcher meant, so there is no need to ask.
+- customer-rescheduled: an existing booking moves at the customer's request. Put the
+  new day in `day` (YYYY-MM-DD); a stated time goes in `at` (and `until` if an end
+  was named). A day with NO time is complete - "sometime Tuesday" reschedules to
+  Tuesday and the planner picks the exact slot, the same way it does for a fresh
+  booking. Never ask for a time merely because none was given; ask only when even
+  the day is unclear.
 """
 
 
@@ -145,7 +159,7 @@ def _roster(world: WorldState) -> str:
         f"Vans: {vans}\nWorkers: {workers}\nJobs: {jobs}\n"
         f"Event kinds: van-unavailable, van-restored, worker-unavailable, "
         f"worker-restored, job-dispatched, job-cancelled, job-overran, job-completed, "
-        f"traffic-delay"
+        f"customer-rescheduled, traffic-delay"
     )
 
 
@@ -165,6 +179,13 @@ EXAMPLES: tuple[Example, ...] = (
         ),
     ),
     Example(
+        text="change the Patel booking to Tuesday sometime",
+        output=TriageOutcome(
+            events=[TriagedEvent(kind="customer-rescheduled", target="j-403", day="2026-01-13")],
+            summary="Patel moves to Tuesday; the planner will pick the slot.",
+        ),
+    ),
+    Example(
         text="Dan says the van's making a noise, might need looking at",
         output=TriageOutcome(
             events=[],
@@ -177,12 +198,19 @@ EXAMPLES: tuple[Example, ...] = (
 )
 
 
+def _clock_or(clock: str, fallback: time) -> time:
+    try:
+        return datetime.strptime(clock, "%H:%M").time()
+    except ValueError:
+        return fallback
+
+
 def _known_target(world: WorldState, kind: str, target: str) -> bool:
     if kind.startswith("van-"):
         return target in world.vans
     if kind.startswith("worker-"):
         return target in world.workers
-    if kind.startswith("job-"):
+    if kind.startswith("job-") or kind == "customer-rescheduled":
         return target in world.jobs
     return True
 
@@ -211,7 +239,10 @@ def triage(
         extraction = extract(
             provider,
             TriageOutcome,
-            system=f"{SYSTEM}\nRoster:\n{_roster(world)}",
+            system=(
+                f"{SYSTEM}\nToday is {on_date:%A}, {on_date.isoformat()}."
+                f"\nRoster:\n{_roster(world)}"
+            ),
             text=text,
             examples=EXAMPLES,
             max_attempts=max_attempts,
@@ -268,6 +299,36 @@ def triage(
                 unknown.append(item.target)
                 continue
             try:
+                if item.kind == "customer-rescheduled":
+                    # "Tuesday sometime" is a whole-day window; the solver picks the
+                    # slot exactly as it would for a fresh booking. A stated time
+                    # becomes the usual two-hour arrival window.
+                    move_day = date.fromisoformat(item.day) if item.day else on_date
+                    opens = (
+                        datetime.combine(move_day, _clock_or(item.at, time(8, 0)), tzinfo=tz)
+                        if item.at
+                        else datetime.combine(move_day, time(8, 0), tzinfo=tz)
+                    )
+                    if item.until:
+                        closes = datetime.combine(
+                            move_day, _clock_or(item.until, time(17, 0)), tzinfo=tz
+                        )
+                    elif item.at:
+                        closes = opens + timedelta(minutes=120)
+                    else:
+                        closes = datetime.combine(move_day, time(17, 0), tzinfo=tz)
+                    built.append(
+                        build_event(
+                            item.kind,
+                            item.target or None,
+                            at=reported_at,
+                            dispatch_id=dispatch_id,
+                            window_start=opens,
+                            window_end=closes,
+                            reason=item.reason,
+                        )
+                    )
+                    continue
                 built.append(
                     build_event(
                         item.kind,
