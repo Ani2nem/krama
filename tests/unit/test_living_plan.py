@@ -325,13 +325,18 @@ def test_repair_offers_genuinely_different_trade_offs(world, travel, business, c
 
     Two vans down used to be enough of a squeeze; under marginal-cash economics the
     strategies all found the same cheap answer, because moving work costs fuel rather
-    than wages. Three vans down leaves one van for the whole day, and there the
-    strategies genuinely part ways - what to keep is now a judgement, not arithmetic.
+    than wages. Three vans down used to leave one van and a genuine squeeze - then
+    crews learned to re-form at the shop and run out twice, and a single van could
+    quietly absorb the whole day again. So the last van also loses its morning:
+    one van, one afternoon, and what to keep is a judgement once more.
     """
     for van_id in ("van-1", "van-2", "van-3"):
         world.van_outages[van_id] = [
             Unavailability(from_time=_at(0, 0), until_time=None, reason="out")
         ]
+    world.van_outages["van-4"] = [
+        Unavailability(from_time=_at(0, 0), until_time=_at(0, 13), reason="in the shop till one")
+    ]
     options = repair(world, travel, business, committed)
     signatures = {(c.jobs_served, c.changes, c.customer_calls) for c in options.candidates}
     assert len(signatures) > 1 or len(options.candidates) == 1

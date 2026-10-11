@@ -350,3 +350,57 @@ def test_the_tie_break_never_outweighs_a_cent_of_real_cost(world, travel, params
     # the economics or the geography do is a number that would catch a tie-break
     # quietly buying a worse plan.
     assert round(result.objective_cost, 2) == 55.17
+
+
+def test_crews_re_form_at_the_shop_for_the_afternoon(world, travel, params):
+    """Dan runs solo all morning in one van; Priya works another. At three the
+    board has a job that needs them BOTH - and now they can have it: both runs
+    come home, Dan and Priya leave the shop together in one van. Nobody swaps
+    vans at a kerb, nothing is left parked anywhere but home.
+    """
+    from krama.domain.models import TimeWindow
+
+    template = world.jobs["j-401"]
+
+    def job_at(job_id: str, like: str, open_h: int, close_h: int, crew: int) -> None:
+        site = world.jobs[like]
+        world.jobs[job_id] = template.model_copy(
+            update={
+                "id": job_id,
+                "customer_name": job_id,
+                "location": site.location,
+                "required_certifications": frozenset(),
+                "crew_size": crew,
+                "estimated_duration_min": 60,
+                "windows": (TimeWindow(start=_at(0, open_h), end=_at(0, close_h)),),
+            }
+        )
+
+    job_at("j-dan-am", "j-401", 8, 11, crew=1)
+    job_at("j-priya-am", "j-402", 8, 11, crew=1)
+    job_at("j-pair-pm", "j-403", 15, 17, crew=2)
+
+    result = plan_day(
+        world=world,
+        travel=travel,
+        on_date=MONDAY,
+        candidate_job_ids=["j-dan-am", "j-priya-am", "j-pair-pm"],
+        params=params,
+        pinned_workers={
+            "j-dan-am": ("w-dan",),
+            "j-priya-am": ("w-priya",),
+            "j-pair-pm": ("w-dan", "w-priya"),
+        },
+    )
+
+    assert not result.unserved, reasons(result)
+    pair_route = next(r for r in result.routes if any(s.job_id == "j-pair-pm" for s in r.stops))
+    assert set(pair_route.worker_ids) == {"w-dan", "w-priya"}, (
+        "the afternoon crew is the two people the job needs, in one van"
+    )
+    assert len([s for r in result.routes for s in r.stops]) == 3
+
+    # The whole arrangement survives the independent checker: no double-booked
+    # van or fitter, every leg recomputed from the road - the afternoon run is a
+    # real departure from the shop, not a teleport from somebody's kerb.
+    assert_feasible(result, world, travel)

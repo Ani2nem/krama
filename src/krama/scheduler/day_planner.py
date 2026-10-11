@@ -60,6 +60,11 @@ from krama.scheduler.travel.base import TimeBucket
 
 MINUTES_PER_DAY = 24 * 60
 
+#: Crew sessions per van per day: out from the shop, work, back to the shop. Two
+#: is enough for the real pattern (day work, then an agreed evening) without
+#: paying for a combinatorial day of micro-trips.
+SESSIONS_PER_DAY = 2
+
 #: What an ordinary solve pays to break a confirmed promise. Not a real dollar
 #: amount - a wall. High enough that no sum of fuel, overtime and lateness within a
 #: day can reach it, low enough that two genuinely conflicting promises degrade to
@@ -713,7 +718,17 @@ def plan_day(
             travel_mi[i][j] = max(leg.miles for leg in legs)
 
     model = cp_model.CpModel()
-    num_crews = len(vans)
+    # Two crew sessions per van per day. A session is one depot-rooted circuit:
+    # leave the shop, work, come back. The second session is how "Dan solo all
+    # morning, then Dan + Priya together in one van at five" becomes schedulable -
+    # crews re-form AT THE SHOP, never at a kerb, and no van is ever left anywhere
+    # but home. Slots 0..V-1 are each van's first session, V..2V-1 the second.
+    num_vans = len(vans)
+    num_crews = num_vans * SESSIONS_PER_DAY
+
+    def van_of(k: int) -> str:
+        return vans[k % num_vans]
+
     job_index = {job.id: idx + 1 for idx, job in enumerate(jobs)}
     locked = set(locked_job_ids)
 
@@ -759,7 +774,25 @@ def plan_day(
 
     # --------------------------------------------------------------- assignment
     for worker in workers:
-        model.add_at_most_one(assign[worker.id, k] for k in range(num_crews))
+        # One crew per SESSION, not per day: the morning pair and the evening pair
+        # may be different people. A fitter on two sessions works them in order -
+        # the second cannot leave the shop before the first brings them back.
+        model.add_at_most_one(assign[worker.id, k] for k in range(num_vans))
+        model.add_at_most_one(assign[worker.id, k] for k in range(num_vans, num_crews))
+        for early in range(num_vans):
+            for late_slot in range(num_vans, num_crews):
+                model.add(crew_start[late_slot] >= crew_end[early]).only_enforce_if(
+                    assign[worker.id, early], assign[worker.id, late_slot]
+                )
+
+    # A van's second session leaves after its first returns; and the second slot
+    # stays dark unless the first is used, so equal plans have one canonical shape.
+    for i in range(num_vans):
+        later = num_vans + i
+        model.add_implication(crew_active[later], crew_active[i])
+        model.add(crew_start[later] >= crew_end[i]).only_enforce_if(
+            crew_active[i], crew_active[later]
+        )
 
     for k in range(num_crews):
         headcount = sum(assign[w.id, k] for w in workers)
@@ -782,7 +815,7 @@ def plan_day(
                     allowance = max(allowance, extended_min - span_end)
             model.add(crew_end[k] <= span_end + allowance).only_enforce_if(assign[worker.id, k])
         # The crew cannot start before its van is available or finish after it goes down.
-        usable_start, usable_end = van_window[vans[k]]
+        usable_start, usable_end = van_window[van_of(k)]
         model.add(crew_start[k] >= usable_start)
         model.add(crew_end[k] <= usable_end)
         model.add(crew_end[k] >= crew_start[k])
@@ -828,8 +861,14 @@ def plan_day(
         # as an equality - the solver would correctly call it unreachable. Work that
         # is genuinely immovable is carved out of the problem entirely; see
         # :func:`krama.scheduler.repair.carve_out_locked`.
-        model.add(visit[job.id, k0] == 1).only_enforce_if(stay[job.id])
-        model.add(start[job.id, k0] >= minutes).only_enforce_if(stay[job.id])
+        #
+        # Either of the van's sessions counts as staying put: an evening job that
+        # re-forms its crew at the shop is still on the same van at the same hour,
+        # and charging it as "moved" would make re-crewing look like churn.
+        same_van = [k0, num_vans + k0]
+        model.add(sum(visit[job.id, k] for k in same_van) == 1).only_enforce_if(stay[job.id])
+        for k in same_van:
+            model.add(start[job.id, k] >= minutes).only_enforce_if(stay[job.id], visit[job.id, k])
 
     # ------------------------------------------------------- crew fitness per job
     # A claimed overtime offer pins its claimant: the fitter who said yes to the
@@ -877,14 +916,20 @@ def plan_day(
                 )
 
     # -------------------------------------------------------------- van capacity
-    for k, van_id in enumerate(vans):
-        van = world.vans[van_id]
+    # Racks limit what a van carries AT ONCE, so each session gets the full rack -
+    # the crew reloads at the shop between runs. Stock is the business's parts for
+    # the day, so a van's two sessions draw from one shelf, not two.
+    part_codes = {m.part_code for job in jobs for m in job.materials if m.in_stock}
+    for k in range(num_crews):
+        van = world.vans[van_of(k)]
         model.add(sum(visit[job.id, k] * _panes(job) for job in jobs) <= van.rack_slots)
-
-        part_codes = {m.part_code for job in jobs for m in job.materials if m.in_stock}
+    for i in range(num_vans):
+        van = world.vans[vans[i]]
+        sessions = [i, num_vans + i]
         for part_code in sorted(part_codes):
             demand = [
                 visit[job.id, k] * m.quantity
+                for k in sessions
                 for job in jobs
                 for m in job.materials
                 if m.in_stock and m.part_code == part_code
@@ -1007,7 +1052,10 @@ def plan_day(
     ot_per_min = _cents(params.labor_rate_per_minute * params.overtime_rate_multiplier)
 
     terms: list[cp_model.LinearExpr] = []
-    for k, van_id in enumerate(vans):
+    #: Each fitter's overtime variables across sessions, for the per-day cap below.
+    member_ot_vars: dict[str, list[cp_model.IntVar]] = {w.id: [] for w in workers}
+    for k in range(num_crews):
+        van_id = van_of(k)
         van_cost_per_mile = world.vans[van_id].cost_per_mile
 
         # Vehicle cost is per van-mile regardless of who is aboard.
@@ -1029,8 +1077,33 @@ def plan_day(
             # shift can run further than 120 minutes, and a bound tighter than the
             # crew-end constraints would turn that agreement into INFEASIBLE.
             member_ot = model.new_int_var(0, MINUTES_PER_DAY, f"ot_{worker.id}_{k}")
-            model.add(member_ot >= crew_end[k] - span_close).only_enforce_if(assign[worker.id, k])
+            # Overtime is minutes WORKED past the shift close, not minutes elapsed
+            # since it. A session that leaves the shop at five did not pay its crew
+            # from three - charging from the close made every evening run look two
+            # hours more expensive than it is.
+            late_departure = model.new_bool_var(f"late_dep_{worker.id}_{k}")
+            model.add(crew_start[k] > span_close).only_enforce_if(late_departure)
+            model.add(crew_start[k] <= span_close).only_enforce_if(~late_departure)
+            model.add(member_ot >= crew_end[k] - span_close).only_enforce_if(
+                assign[worker.id, k], ~late_departure
+            )
+            model.add(member_ot >= crew_end[k] - crew_start[k]).only_enforce_if(
+                assign[worker.id, k], late_departure
+            )
+            member_ot_vars[worker.id].append(member_ot)
             terms.append(member_ot * ot_per_min)
+
+    # The overtime allowance is a DAY's budget, not a per-session one: two sessions
+    # may split the 120 minutes (or an agreed extension), never bank it twice.
+    for worker in workers:
+        span_close = shift_span[worker.id][1]
+        allowance = overtime if worker.overtime_eligible else 0
+        extended = world.extension_for(worker.id, on_date)
+        if extended is not None:
+            extended_min = _clamp_to_day(extended, day_start, params.business_tz)
+            if extended_min is not None:
+                allowance = max(allowance, extended_min - span_close)
+        model.add(sum(member_ot_vars[worker.id]) <= allowance)
 
     # Epsilon tie-break: one cent per van index, so equal-cost plans always pick the
     # same vans instead of reshuffling whenever an unrelated cost term shifts. Real
@@ -1092,12 +1165,17 @@ def plan_day(
     # them somewhere else when the phone rings. Fewer people deployed wins any cash
     # tie before timing does.
     deployed = sum(assign.values())
-    deployed_ceiling = len(workers) * num_crews
+    # Tight ceilings matter here: the lexicographic scaling multiplies them all
+    # together, and with session slots doubling num_crews the old loose bounds
+    # overflowed int64 and the whole model came back MODEL_INVALID. Each worker
+    # holds at most one crew per session; each job is visited at most once.
+    deployed_ceiling = len(workers) * SESSIONS_PER_DAY
 
     # `start` is only constrained when its job is actually visited, so an unvisited
-    # pair sits at zero and contributes nothing.
+    # pair sits at zero and contributes nothing - and a job is visited by at most
+    # one crew, so the sum is bounded by jobs, not jobs x crews.
     earliness = sum(start.values())
-    earliness_ceiling = len(jobs) * num_crews * MINUTES_PER_DAY
+    earliness_ceiling = len(jobs) * MINUTES_PER_DAY
 
     # Then, among plans that are equal on cost and on timing, prefer earlier-named
     # workers on earlier vans.
@@ -1106,7 +1184,7 @@ def plan_day(
         for rank, worker in enumerate(workers)
         for k in range(num_crews)
     )
-    worker_ceiling = len(workers) * num_crews * (len(workers) * num_crews + 1)
+    worker_ceiling = SESSIONS_PER_DAY * len(workers) * (len(workers) * num_crews + 1)
 
     timing_order = earliness * (worker_ceiling + 1) + worker_order
     timing_ceiling = (earliness_ceiling + 1) * (worker_ceiling + 1)
@@ -1148,7 +1226,8 @@ def plan_day(
     # ------------------------------------------------------------------ extract
     routes: list[CrewRoute] = []
     scheduled: set[JobId] = set()
-    for k, van_id in enumerate(vans):
+    for k in range(num_crews):
+        van_id = van_of(k)
         if not solver.boolean_value(crew_active[k]):
             continue
         crew_workers = [w.id for w in workers if solver.boolean_value(assign[w.id, k])]
@@ -1164,7 +1243,9 @@ def plan_day(
             materialize_route(
                 world=world,
                 travel=travel,
-                crew_id=f"crew-{van_id}",
+                # The later session is its own named crew: possibly different
+                # people in the same van, formed at the shop after the first run.
+                crew_id=f"crew-{van_id}" + ("-pm" if k >= num_vans else ""),
                 worker_ids=crew_workers,
                 van_id=van_id,
                 on_date=on_date,
