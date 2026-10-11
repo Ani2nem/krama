@@ -659,6 +659,32 @@ def _fix_the_direction(call: CallExtraction, text: str) -> CallExtraction:
     return call.model_copy(update=update) if update else call
 
 
+#: Deterministic classification of what the caller said about getting the van in.
+#: Checked rather than prompted, like every other backstop here: Rosa said "you
+#: have to park on the street out front", the model marked the access question
+#: answered and left the classification blank - so the question vanished AND the
+#: carry-minutes never landed. Hard words first: an alley with a dock is an alley.
+_ACCESS_HARD = re.compile(r"\balley\b|long carry|walk[- ]?up|no way to park", re.I)
+_ACCESS_STREET = re.compile(r"street parking|park (?:on|in) the street|no (?:parking )?lot\b", re.I)
+_ACCESS_EASY = re.compile(
+    r"loading dock|\bdriveway\b|park (?:right )?(?:at|by|in front of) the door", re.I
+)
+
+
+def _hear_the_parking_situation(call: CallExtraction, text: str) -> CallExtraction:
+    """When the caller described access and the model left the box unticked."""
+    if call.site_access:
+        return call
+    for level, pattern in (
+        ("difficult", _ACCESS_HARD),
+        ("street_parking", _ACCESS_STREET),
+        ("easy", _ACCESS_EASY),
+    ):
+        if pattern.search(text):
+            return call.model_copy(update={"site_access": level})
+    return call
+
+
 def _distrust_a_size_read_as_a_count(call: CallExtraction, text: str) -> CallExtraction:
     """A measurement is not a quantity.
 
@@ -799,6 +825,7 @@ def intake(
         call = extraction.value
         if call is not None:
             call = _distrust_a_size_read_as_a_count(call, text)
+            call = _hear_the_parking_situation(call, text)
             call = _fix_the_direction(call, text)
             call = grounded_commitments(call, text)
             call = _civil_floor(call, text)
