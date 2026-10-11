@@ -506,3 +506,50 @@ def test_a_released_promise_is_served_when_the_crew_can_not_when_the_window_says
     }
     assert "worker_unavailable" not in codes, codes
     assert "confirmed_window_moved" in codes, codes
+
+
+def test_a_midday_hole_keeps_both_halves_of_the_day(world, travel, params):
+    """Priya out 11-to-12 lost her whole afternoon: the model kept only her
+    largest free stretch, so the evening her yes was holding up vanished with
+    the dentist appointment. The fragments are all real capacity now - she works
+    the morning, sits out her hour, and still makes the evening she agreed to."""
+    from krama.domain.models import TimeWindow
+
+    world.worker_outages["w-dan"] = [
+        Unavailability(from_time=_at(0, 11), until_time=_at(0, 12), reason="dentist")
+    ]
+    # Dan agreed to an evening - the yes that used to vanish with the hole.
+    world.shift_extensions[("w-dan", MONDAY)] = _at(0, 20, 45)
+
+    template = world.jobs["j-401"]
+
+    def place(job_id: str, open_h: int, close_h: int, duration: int) -> None:
+        world.jobs[job_id] = template.model_copy(
+            update={
+                "id": job_id,
+                "customer_name": job_id,
+                "required_certifications": frozenset(),
+                "crew_size": 1,
+                "estimated_duration_min": duration,
+                "windows": (TimeWindow(start=_at(0, open_h), end=_at(0, close_h)),),
+            }
+        )
+
+    place("j-morning", 8, 11, duration=120)
+    place("j-evening", 17, 21, duration=120)
+
+    result = plan_day(
+        world=world,
+        travel=travel,
+        on_date=MONDAY,
+        candidate_job_ids=["j-morning", "j-evening"],
+        params=params,
+        pinned_workers={"j-morning": ("w-dan",), "j-evening": ("w-dan",)},
+    )
+    assert not result.unserved, reasons(result)
+    stops = {s.job_id: s for r in result.routes for s in r.stops}
+    assert stops["j-morning"].departure.astimezone(BUSINESS_TZ).hour <= 11
+    assert stops["j-evening"].arrival.astimezone(BUSINESS_TZ).hour >= 17, (
+        "the evening his yes holds up survives the midday hole"
+    )
+    assert_feasible(result, world, travel)

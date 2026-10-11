@@ -61,7 +61,9 @@ van broken down, a fitter off sick, traffic, a job overrunning, a part not arriv
 customer moving or cancelling an appointment they already have.
 
 The person calling is often an employee in the second case and a customer in the first.
-A name on its own decides nothing.
+A name on its own decides nothing - but the roster below does: a note ABOUT one of the
+business's own fitters or vans - their hours, health, availability, a correction to
+when they are out - is a disruption, never a booking. Our own fitter is not a customer.
 """
 
 
@@ -89,10 +91,27 @@ EXAMPLES: tuple[Example, ...] = (
         ),
         output=NoteRouting(kind="booking", why="A customer with damage wants it fixed."),
     ),
+    # The case that was misread in the wild: a correction about a FITTER's hours
+    # became a customer named Priya wanting a window fitted 11-to-1.
+    Example(
+        text=(
+            "hey I just asked Priya, she's actually out from 11 to 1 on Monday, "
+            "correction, she's available the rest of the day including overtime"
+        ),
+        output=NoteRouting(
+            kind="disruption",
+            why="A correction to one of our own fitters' availability.",
+        ),
+    ),
 )
 
 
-def route_note(provider: LLMProvider, text: str) -> Extraction[NoteRouting]:
-    """Decide which specialist should read this note."""
+def route_note(provider: LLMProvider, text: str, roster: str = "") -> Extraction[NoteRouting]:
+    """Decide which specialist should read this note.
+
+    ``roster`` names the business's own fitters and vans, so "Priya is out 11 to 1"
+    reads as a crew correction instead of a customer called Priya wanting a window.
+    """
+    system = SYSTEM if not roster else f"{SYSTEM}\nThe business's own roster: {roster}\n"
     with span("agent.router", chars=len(text)):
-        return extract(provider, NoteRouting, system=SYSTEM, text=text, examples=EXAMPLES)
+        return extract(provider, NoteRouting, system=system, text=text, examples=EXAMPLES)

@@ -771,7 +771,13 @@ def read_note(
 
     why = ""
     if kind is None:
-        routed = route_note(build_llm(), request.text)
+        svc = service()
+        try:
+            world = svc.world()
+            roster = ", ".join([w.name for w in world.workers.values()] + sorted(world.vans))
+        except ServiceError:
+            roster = ""
+        routed = route_note(build_llm(), request.text, roster=roster)
         kind = routed.value.kind if routed.value else NoteKind.BOOKING.value
         why = routed.value.why if routed.value else "could not tell, assumed a booking"
 

@@ -327,6 +327,42 @@ def _windows_touch_day(job: Job, day_start: datetime, tz: tzinfo) -> bool:
     return any(w.start < day_end and day_start < w.end for w in job.windows)
 
 
+def _free_intervals(
+    outages: Iterable[Unavailability],
+    day_start: datetime,
+    span_start: int,
+    span_end: int,
+) -> list[tuple[int, int]]:
+    """Every free stretch of ``[span_start, span_end)``, in order.
+
+    The old model kept only the largest stretch - "one contiguous shift per crew"
+    - which meant a fitter out 11-to-12 lost either her whole morning or her whole
+    afternoon, and with it the evening her extension was holding up. Sessions can
+    put one fitter on two runs now, so the fragments are all real capacity.
+    """
+    blocked: list[tuple[int, int]] = []
+    for outage in outages:
+        start = (outage.from_time - day_start).total_seconds() / 60.0
+        end = (
+            (outage.until_time - day_start).total_seconds() / 60.0
+            if outage.until_time is not None
+            else float(MINUTES_PER_DAY)
+        )
+        lo, hi = max(span_start, int(start)), min(span_end, int(end))
+        if lo < hi:
+            blocked.append((lo, hi))
+    blocked.sort()
+    out: list[tuple[int, int]] = []
+    cursor = span_start
+    for lo, hi in blocked:
+        if lo > cursor:
+            out.append((cursor, lo))
+        cursor = max(cursor, hi)
+    if cursor < span_end:
+        out.append((cursor, span_end))
+    return out
+
+
 def _largest_free_interval(
     outages: Iterable[Unavailability],
     day_start: datetime,
@@ -660,25 +696,25 @@ def plan_day(
     # Outages are intersected with the shift rather than used as an on/off filter.
     # A van that dies at 10:40 was perfectly usable at 06:00, and excluding it from
     # the whole day throws away a morning of capacity for no reason.
-    shift_span: dict[WorkerId, tuple[int, int]] = {}
-    #: Workers whose usable day ends at an OUTAGE edge rather than their shift
-    #: close - "out 10 to 11" truncating the morning. Overtime extends shift
-    #: closes, never absences: letting the standard allowance reach past a
-    #: dentist appointment scheduled Priya's install straight through it.
-    cut_short: dict[WorkerId, bool] = {}
+    #: Each fitter's free stretches of the day, and their TRUE shift close.
+    #: Overtime and extensions attach only to a stretch that ends at the real
+    #: close - "out 10 to 11" cuts a morning at an outage edge, and overtime
+    #: extends shift closes, never absences.
+    worker_intervals: dict[WorkerId, list[tuple[int, int]]] = {}
+    true_close: dict[WorkerId, int] = {}
     workers: list[Worker] = []
     for worker in sorted(world.workers.values(), key=lambda w: w.id):
         span = _shift_window(worker, on_date)
         if span is None:
             continue
-        usable = _largest_free_interval(
+        fragments = _free_intervals(
             world.worker_outages.get(worker.id, ()), day_start, span[0], span[1]
         )
-        if usable is None:
+        if not fragments:
             continue
         workers.append(worker)
-        shift_span[worker.id] = usable
-        cut_short[worker.id] = usable[1] < span[1]
+        worker_intervals[worker.id] = fragments
+        true_close[worker.id] = span[1]
 
     van_window: dict[VanId, tuple[int, int]] = {}
     vans: list[VanId] = []
@@ -704,8 +740,8 @@ def plan_day(
         )
 
     overtime = params.overtime_minutes if params.allow_overtime else 0
-    earliest_shift = min(s for s, _ in shift_span.values())
-    latest_shift = max(e for _, e in shift_span.values()) + overtime
+    earliest_shift = min(iv[0][0] for iv in worker_intervals.values())
+    latest_shift = max(true_close.values()) + overtime
 
     # ------------------------------------------------------------- travel matrix
     probes = _probe_times(day_start, earliest_shift, latest_shift, params.travel_bucket)
@@ -811,17 +847,25 @@ def plan_day(
         # person said yes to a named hour, and that yes outranks the standard
         # allowance for that date only.
         for worker in workers:
-            span_start, span_end = shift_span[worker.id]
-            model.add(crew_start[k] >= span_start).only_enforce_if(assign[worker.id, k])
-            allowance = 0
-            if not cut_short[worker.id]:
-                allowance = overtime if worker.overtime_eligible else 0
-                extended = world.extension_for(worker.id, on_date)
-                if extended is not None:
-                    extended_min = _clamp_to_day(extended, day_start, params.business_tz)
-                    if extended_min is not None:
-                        allowance = max(allowance, extended_min - span_end)
-            model.add(crew_end[k] <= span_end + allowance).only_enforce_if(assign[worker.id, k])
+            close = true_close[worker.id]
+            allowance = overtime if worker.overtime_eligible else 0
+            extended = world.extension_for(worker.id, on_date)
+            if extended is not None:
+                extended_min = _clamp_to_day(extended, day_start, params.business_tz)
+                if extended_min is not None:
+                    allowance = max(allowance, extended_min - close)
+            # The whole session lives inside ONE of this fitter's free stretches.
+            # Only a stretch that reaches the true shift close earns the overtime
+            # allowance - the others end at absences, which overtime never extends.
+            fragments = worker_intervals[worker.id]
+            picks = []
+            for f_idx, (iv_start, iv_end) in enumerate(fragments):
+                pick = model.new_bool_var(f"frag_{worker.id}_{k}_{f_idx}")
+                picks.append(pick)
+                model.add(crew_start[k] >= iv_start).only_enforce_if(assign[worker.id, k], pick)
+                reach = iv_end + (allowance if iv_end >= close else 0)
+                model.add(crew_end[k] <= reach).only_enforce_if(assign[worker.id, k], pick)
+            model.add(sum(picks) >= 1).only_enforce_if(assign[worker.id, k])
         # The crew cannot start before its van is available or finish after it goes down.
         usable_start, usable_end = van_window[van_of(k)]
         model.add(crew_start[k] >= usable_start)
@@ -1080,7 +1124,7 @@ def plan_day(
         # which covers late driving as well as late work - a van on the road at six
         # is a fitter being paid at six.
         for worker in workers:
-            span_close = shift_span[worker.id][1]
+            span_close = true_close[worker.id]
             # Ceiling is the whole day, not the standard allowance: an extended
             # shift can run further than 120 minutes, and a bound tighter than the
             # crew-end constraints would turn that agreement into INFEASIBLE.
@@ -1104,15 +1148,13 @@ def plan_day(
     # The overtime allowance is a DAY's budget, not a per-session one: two sessions
     # may split the 120 minutes (or an agreed extension), never bank it twice.
     for worker in workers:
-        span_close = shift_span[worker.id][1]
-        allowance = 0
-        if not cut_short[worker.id]:
-            allowance = overtime if worker.overtime_eligible else 0
-            extended = world.extension_for(worker.id, on_date)
-            if extended is not None:
-                extended_min = _clamp_to_day(extended, day_start, params.business_tz)
-                if extended_min is not None:
-                    allowance = max(allowance, extended_min - span_close)
+        span_close = true_close[worker.id]
+        allowance = overtime if worker.overtime_eligible else 0
+        extended = world.extension_for(worker.id, on_date)
+        if extended is not None:
+            extended_min = _clamp_to_day(extended, day_start, params.business_tz)
+            if extended_min is not None:
+                allowance = max(allowance, extended_min - span_close)
         model.add(sum(member_ot_vars[worker.id]) <= allowance)
 
     # Epsilon tie-break: one cent per van index, so equal-cost plans always pick the
