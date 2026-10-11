@@ -478,7 +478,7 @@ def get_plan(request: Request) -> PlanView | None:
     from krama.scheduler.costing import cost_plan
 
     travel = svc.travel(world)
-    violations = validate_plan(head, world, travel, ValidationConfig(business_tz=svc.tz))
+    violations = validate_plan(head, world, travel, svc.validation_config())
     cost, route_costs = cost_plan(head, world, svc.business, svc.tz, head.unserved)
     view = views.plan_view(head, world, cost, route_costs, violations, svc.tz)
     return _strip_money(view, request)
@@ -497,17 +497,60 @@ def get_params() -> list[ParamView]:
 
 
 @app.post("/api/plan/commit", response_model=PlanView)
-def commit_plan(request: Request, start_date: str | None = Query(default=None)) -> PlanView:
+def commit_plan(
+    request: Request,
+    start_date: str | None = Query(default=None),
+    move_promises: bool = Query(default=False),
+) -> PlanView:
+    """Re-plan and commit - unless keeping the board means breaking a promise.
+
+    The old behaviour was worse than refusing: an infeasible draft was returned
+    and the UI rendered it as the schedule, so "Maria at 8:06 PM" appeared on the
+    calendar without ever being committed, decided, or told to Maria. A plan that
+    moves a confirmed window now comes back as a 409 naming each customer; the
+    dispatcher either fixes availability, rebooks them, or passes move_promises
+    explicitly - a decision, never a side effect.
+    """
+    from krama.domain.enums import ViolationCode
+
     svc = service()
     with dispatch(new_dispatch_id("web")), span("api.commit"):
         try:
             world = svc.world()
             start = date.fromisoformat(start_date) if start_date else _default_start(svc)
             result = svc.plan_week(start, world=world)
-            if result.feasible:
-                head = svc.head()
-                svc.commit(result.plan, expected_parent=head.id if head else None)
-                broadcaster.publish("plan", {"plan_id": result.plan.id})
+            if not result.feasible:
+                moved = sorted(
+                    {
+                        v.job_id
+                        for v in result.violations
+                        if v.code is ViolationCode.CONFIRMED_WINDOW_MOVED and v.job_id
+                    }
+                )
+                only_moves = moved and all(
+                    v.code is ViolationCode.CONFIRMED_WINDOW_MOVED for v in result.violations
+                )
+                if only_moves and move_promises:
+                    result = svc.plan_week(start, world=world, authorized_releases=frozenset(moved))
+                if not result.feasible:
+                    lines = "; ".join(v.detail for v in result.violations[:3])
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "PromisesAtRisk" if only_moves else "PlanInfeasible",
+                            "detail": lines,
+                            "remedy": (
+                                "fix who is available, rebook them from the red strip, or "
+                                "press 'Move their windows' to accept - each one then needs "
+                                "a phone call"
+                                if only_moves
+                                else "fix what the message names, then rebuild"
+                            ),
+                        },
+                    )
+            head = svc.head()
+            svc.commit(result.plan, expected_parent=head.id if head else None)
+            broadcaster.publish("plan", {"plan_id": result.plan.id})
         except (ServiceError, ValueError) as exc:
             raise _fail(exc, 409) from exc
 
@@ -676,7 +719,7 @@ def _quiet_reroute(svc: DispatchService) -> str:
         return ""
     world = svc.world()
     travel = svc.travel(world)
-    if not validate_plan(baseline, world, travel, ValidationConfig(business_tz=svc.tz)):
+    if not validate_plan(baseline, world, travel, svc.validation_config()):
         return ""  # the outage touched nothing that was planned
 
     try:
@@ -696,7 +739,7 @@ def _quiet_reroute(svc: DispatchService) -> str:
     # (that is what released_promises records), but what matters is what came out:
     # validated with no release authorisation at all, so a plan that actually moved
     # or dropped a promised window fails here and stays a human decision.
-    if validate_plan(best.plan, world, travel, ValidationConfig(business_tz=svc.tz)):
+    if validate_plan(best.plan, world, travel, svc.validation_config()):
         return ""
 
     try:

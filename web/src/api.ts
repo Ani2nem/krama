@@ -18,6 +18,7 @@ export class ApiError extends Error {
     message: string,
     readonly remedy: string = "",
     readonly status: number = 0,
+    readonly code: string = "",
   ) {
     super(message);
   }
@@ -43,15 +44,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let detail = response.statusText;
     let remedy = "";
+    let code = "";
     try {
       const body = await response.json();
       const payload = body.detail ?? body;
       detail = payload.detail ?? payload.error ?? detail;
       remedy = payload.remedy ?? "";
+      code = payload.error ?? "";
     } catch {
       /* a non-JSON error body is still an error */
     }
-    throw new ApiError(detail, remedy, response.status);
+    throw new ApiError(detail, remedy, response.status, code);
   }
   return (await response.json()) as T;
 }
@@ -64,7 +67,8 @@ export const api = {
     request<World>(`/api/world${rotaStart ? `?rota_start=${rotaStart}` : ""}`),
   week: () => request<Week>("/api/week"),
   plan: () => request<Plan | null>("/api/plan"),
-  commit: () => post<Plan>("/api/plan/commit"),
+  commit: (movePromises = false) =>
+    post<Plan>(`/api/plan/commit${movePromises ? "?move_promises=true" : ""}`),
   openAsk: (ask: Record<string, unknown>) => post<{ ask_id: string }>("/api/asks", ask),
   extendAsk: (askId: string, workerId: string) =>
     post<{ worker: string; until: string; status: string }>(

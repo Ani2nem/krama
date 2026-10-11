@@ -443,4 +443,6 @@ def test_a_confirmed_soft_window_binds_like_a_hard_one(
     plan_builder.route("A", ["w-dan"], "van-3", ["j-402"], day=0, start_hour=13)
     violations = validate_plan(plan_builder.build(), world, travel, config)
     assert ViolationCode.CONFIRMED_WINDOW_MOVED in codes(violations)
-    assert any("promised window" in v.detail for v in violations)
+    # The line names the customer and both times - a sentence the dispatcher can
+    # read down the phone, not a pair of ISO timestamps.
+    assert any("was promised" in v.detail and "have not been told" in v.detail for v in violations)

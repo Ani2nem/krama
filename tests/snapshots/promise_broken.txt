@@ -41,4 +41,4 @@ PLAN 2026-09-21  (3edb69d3a5827e5a)
   solver objective $27,949.03  (+$24,748.05 vs actual)   status OPTIMAL   N.NNNs
 
   INVARIANTS: 1 VIOLATION(S) - plan is not committable
-      [confirmed_window_moved] a promised window was moved: 2026-09-21T13:41:00-05:00..2026-09-21T15:41:00-05:00 against [2026-09-21T09:00:00-05:00..2026-09-21T11:30:00-05:00 (soft)] (job=j-402 crew=crew-van-3)
+      [confirmed_window_moved] Chen Residence was promised Mon 9:00 AM - 11:30 AM and this plan has them at Mon 1:41 PM - they have not been told (job=j-402 crew=crew-van-3)

@@ -131,6 +131,22 @@ export default function App() {
             (j): j is NonNullable<typeof j> => !!j && j.commitment_state === "confirmed",
           )
       : [];
+  // Promises the plan SERVES at the wrong time - moved, with the customer not yet
+  // told. Served-but-late hid from the unserved list, so Maria's 8 PM surprise
+  // never reached the strip that exists for exactly this call.
+  const movedPromises =
+    plan && world
+      ? plan.routes
+          .flatMap((r) => r.stops)
+          .flatMap((s) => {
+            const job = world.jobs.find((j) => j.id === s.job_id);
+            if (!job || job.commitment_state !== "confirmed" || !job.window_start) return [];
+            const arrival = s.arrival;
+            if (arrival >= job.window_start && arrival <= job.window_end) return [];
+            if (brokenPromises.some((b) => b.id === job.id)) return [];
+            return [{ job, arrival }];
+          })
+      : [];
 
   return (
     <div className="app">
@@ -214,6 +230,7 @@ export default function App() {
               setBusy(true);
               try {
                 setPlan(await api.commit());
+                setError(null);
               } catch (exc) {
                 setError(exc as ApiError);
               } finally {
@@ -229,6 +246,30 @@ export default function App() {
         <div className="banner banner--error">
           {error.message}
           {error.remedy && <span className="muted"> - {error.remedy}</span>}
+          {error.code === "PromisesAtRisk" && (
+            /* Moving a customer's promise is a decision with a phone call attached.
+               It takes its own press - never a side effect of a rota click or an
+               automatic rebuild, which is how Maria ended up planned for 8 PM
+               without anybody deciding anything. */
+            <button
+              className="danger"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  setPlan(await api.commit(true));
+                  setError(null);
+                  await refresh();
+                } catch (exc) {
+                  setError(exc as ApiError);
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Move their windows - each one then needs a call
+            </button>
+          )}
         </div>
       )}
 
@@ -243,8 +284,48 @@ export default function App() {
         </aside>
 
         <div className="boardcol">
-        {brokenPromises.length > 0 && (
+        {(brokenPromises.length > 0 || movedPromises.length > 0) && (
           <section className="asks">
+            {movedPromises.map(({ job, arrival }) => (
+              <div key={job.id} className="asks__row asks__row--broken">
+                <div className="asks__what">
+                  <strong>{job.customer_name} has not been told.</strong>
+                  <span>
+                    {" "}They were promised {job.window || "a window"} and the plan now has
+                    them at {new Date(arrival).toLocaleString(undefined, {
+                      weekday: "short",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}.{" "}
+                  </span>
+                  <span className="asks__who">
+                    Call them{job.phone ? ` - ${job.phone}` : ""} - or find them a slot they
+                    actually agreed to.
+                  </span>
+                </div>
+                <div className="asks__actions">
+                  <button
+                    disabled={busy || !job.transcript}
+                    title="re-price their original call right now - new slots to read them"
+                    onClick={() =>
+                      setPrefill({ text: job.transcript, nonce: Date.now(), run: true })
+                    }
+                  >
+                    Find them a new slot
+                  </button>
+                  <button
+                    disabled={busy}
+                    title="open the booking on the calendar"
+                    onClick={() => {
+                      setView("board");
+                      setSelected(job.id);
+                    }}
+                  >
+                    Open the booking
+                  </button>
+                </div>
+              </div>
+            ))}
             {brokenPromises.map((j) => (
               <div key={j.id} className="asks__row asks__row--broken">
                 <div className="asks__what">
