@@ -2207,3 +2207,28 @@ def test_a_withdrawn_yes_comes_off_the_rota_and_the_evening(client: TestClient):
     world = client.get("/api/world").json()
     ask = next(a for a in world["crew_asks"] if a["ask_id"] == ask_id)
     assert ask["ask_id"] == ask_id, "the promise to call Jimmy back is still owed"
+
+
+def test_an_ask_knows_how_many_yeses_make_the_hours_real(client: TestClient):
+    """Two fitters wanted means one yes is still a refusal. The ask carries the
+    number so the board can keep "Book them" dark until the crew is actually
+    there - booking on half a crew books a promise we cannot keep."""
+    monday = _next_monday()
+    opened = client.post(
+        "/api/asks",
+        json={
+            "customer_name": "Jimmy",
+            "phone": "8175768492",
+            "transcript": "walmart glass broke, come at 5pm",
+            "on_date": monday,
+            "until": "20:45",
+            "candidate_ids": ["w-marcus", "w-priya"],
+            "detail": "check with Marcus and Priya",
+            "crew_size": 2,
+        },
+    ).json()
+    ask = next(
+        a for a in client.get("/api/world").json()["crew_asks"] if a["ask_id"] == opened["ask_id"]
+    )
+    assert ask["crew_size"] == 2
+    assert len(ask["extended"]) < ask["crew_size"], "one yes short - not bookable yet"

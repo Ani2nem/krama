@@ -358,9 +358,24 @@ def _check_travel_consistency(
             if job is None:
                 continue
 
-            if previous_stop is None:
+            if previous_stop is None or stop.fresh_run:
+                # The first stop of the day - or of a fresh run after the crew went
+                # home rather than idling out a long gap - departs from the depot.
                 origin = van.home_depot if van else None
                 depart_at = stop.arrival - timedelta(minutes=stop.travel_minutes_from_prev)
+                if previous_stop is not None and stop.arrival < previous_stop.departure:
+                    out.append(
+                        Violation(
+                            code=ViolationCode.TRAVEL_TIME_INCONSISTENT,
+                            detail=(
+                                f"arrives {stop.arrival.isoformat()} before leaving the "
+                                f"previous stop at {previous_stop.departure.isoformat()}"
+                            ),
+                            job_id=stop.job_id,
+                            crew_id=route.crew_id,
+                            on_date=route.date,
+                        )
+                    )
             else:
                 previous_job = world.jobs.get(previous_stop.job_id)
                 origin = previous_job.location if previous_job else None

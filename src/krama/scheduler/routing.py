@@ -29,6 +29,13 @@ from krama.domain.models import (
 from krama.domain.state import WorldState
 from krama.domain.travel import TravelLeg, TravelOracle
 
+#: Idle this long at a customer's kerb and the crew drives back to the shop
+#: instead - nobody waits out a four-hour gap in somebody's driveway. The split
+#: is a materialization fact, not a solver decision: the sequence is unchanged,
+#: but the afternoon stop becomes a fresh departure from the depot, and both
+#: extra legs (home, and out again) are priced as the real driving they are.
+RUN_BREAK_AFTER_MINUTES = 90
+
 
 def _earliest_start(job: Job, arrival: datetime) -> datetime:
     """When service can actually begin, accounting for waiting at a closed door.
@@ -112,6 +119,19 @@ def materialize_route(
     for job_id in job_sequence:
         job = world.jobs[job_id]
         leg, arrival = _depart_and_arrive(travel, position, job, clock)
+        fresh_run = False
+        break_minutes, break_miles = 0, 0.0
+        idle = arrival - timedelta(minutes=leg.minutes) - clock
+        if stops and idle >= timedelta(minutes=RUN_BREAK_AFTER_MINUTES):
+            home_leg = travel.leg(position, van.home_depot, clock)
+            ready_at_shop = clock + timedelta(minutes=home_leg.minutes)
+            out_leg, out_arrival = _depart_and_arrive(travel, van.home_depot, job, ready_at_shop)
+            # Only split when the round trip genuinely fits the gap - a depot on
+            # the far side of town must not make the customer later.
+            if out_arrival <= arrival:
+                fresh_run = True
+                break_minutes, break_miles = home_leg.minutes, home_leg.miles
+                leg, arrival = out_leg, out_arrival
         departure = arrival + timedelta(minutes=job.estimated_duration_min)
         stops.append(
             Stop(
@@ -120,6 +140,9 @@ def materialize_route(
                 departure=departure,
                 travel_minutes_from_prev=leg.minutes,
                 travel_miles_from_prev=leg.miles,
+                fresh_run=fresh_run,
+                run_break_minutes=break_minutes,
+                run_break_miles=break_miles,
             )
         )
         position = job.location

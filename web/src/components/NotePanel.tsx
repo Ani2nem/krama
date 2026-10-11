@@ -191,7 +191,8 @@ export function NotePanel({
 
   const draft = note?.booking?.draft;
   const booking = note?.booking;
-  const activeTab = slotTab ?? "asked";
+  // With zero slots in their stated hours, the in-hours alternatives ARE the list.
+  const activeTab = slotTab ?? (booking && booking.slots.length === 0 ? "flexible" : "asked");
   const orderedSlots = (() => {
     if (!booking) return [];
     if (activeTab === "flexible") return booking.flexible_slots;
@@ -436,6 +437,7 @@ export function NotePanel({
                       until: booking.crew_ask.until,
                       candidate_ids: booking.crew_ask.candidate_ids,
                       detail: booking.crew_ask.message,
+                      crew_size: booking.crew_ask.crew_size,
                     });
                     setHeld(true);
                     onChanged();
@@ -449,16 +451,33 @@ export function NotePanel({
             </div>
           )}
 
-          {booking.slots.length > 0 && (
+          {(booking.slots.length > 0 || booking.flexible_slots.length > 0) && (
             <div className="slots">
-              <h3>Offer them</h3>
-              <p className="slots__how">
-                What they asked for, priced. The big number is the quote, tax included
-                {booking.redacted
-                  ? "."
-                  : "; underneath is what we keep once the glass, wages and driving are paid."}
-              </p>
-              {booking.flexible_slots.length > 0 && (
+              {booking.slots.length > 0 ? (
+                <>
+                  <h3>Offer them</h3>
+                  <p className="slots__how">
+                    What they asked for, priced. The big number is the quote, tax included
+                    {booking.redacted
+                      ? "."
+                      : "; underneath is what we keep once the glass, wages and driving are paid."}
+                  </p>
+                </>
+              ) : (
+                /* Their hours need the crew's yes, but the calendar is not empty:
+                   the dispatcher says "let me check with the crew - and just so you
+                   know, these earlier days are open now and cheaper" BEFORE anyone
+                   is put on hold. */
+                <>
+                  <h3>Open right now, no need to ask anyone</h3>
+                  <p className="slots__how">
+                    Their stated hours need the crew to say yes first - offer these
+                    in-hours days while you check: bookable this minute, and cheaper
+                    than an evening would be.
+                  </p>
+                </>
+              )}
+              {booking.slots.length > 0 && booking.flexible_slots.length > 0 && (
                 <div className="slots__tabs">
                   <button
                     className={activeTab === "asked" ? "on" : ""}
@@ -484,11 +503,12 @@ export function NotePanel({
                 >
                   {slot.outside_preference && (
                     <div className="slot__flex">
-                      outside their stated hours - saves them $
-                      {(
-                        Math.min(...booking.slots.map((other) => other.quote_total)) -
-                        slot.quote_total
-                      ).toFixed(2)}
+                      {booking.slots.length > 0
+                        ? `outside their stated hours - saves them $${(
+                            Math.min(...booking.slots.map((other) => other.quote_total)) -
+                            slot.quote_total
+                          ).toFixed(2)}`
+                        : "in working hours - open now, no overtime, nobody to ask"}
                     </div>
                   )}
                   <div className="slot__day">

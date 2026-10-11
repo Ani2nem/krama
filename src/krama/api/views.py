@@ -65,19 +65,35 @@ def route_view(
         upcoming_job = world.jobs.get(upcoming.job_id)
         names_after.append(f"{upcoming_job.customer_name}'s" if upcoming_job else "the next stop")
 
+    # A "run" is a chain of stops with no trip home inside it. The crew that does
+    # three mornings, drives back to the shop, and goes out again at five is on two
+    # runs - and the evening card must not claim the morning stops as company.
+    run_of: list[int] = []
+    current_run = 0
+    for i, s_ in enumerate(route.stops):
+        if i > 0 and s_.fresh_run:
+            current_run += 1
+        run_of.append(current_run)
+
     def run_note_for(index: int) -> str:
-        if len(route.stops) == 1:
+        mates = [
+            names_after[i]
+            for i in range(len(route.stops))
+            if run_of[i] == run_of[index] and i != index
+        ]
+        if not mates:
             return "a dedicated trip out and back"
-        others = [name for i, name in enumerate(names_after) if i != index]
-        more = f" (+{len(others) - 2} more)" if len(others) > 2 else ""
-        listed = " and ".join(others[:2]) + more
-        return f"one of {len(route.stops)} stops on this run, with {listed}"
+        more = f" (+{len(mates) - 2} more)" if len(mates) > 2 else ""
+        listed = " and ".join(mates[:2]) + more
+        return f"one of {len(mates) + 1} stops on this run, with {listed}"
 
     for index, stop in enumerate(route.stops):
         job = world.jobs.get(stop.job_id)
         gap = 0
         if previous_departure is not None:
-            free_at = previous_departure + timedelta(minutes=stop.travel_minutes_from_prev)
+            free_at = previous_departure + timedelta(
+                minutes=stop.run_break_minutes + stop.travel_minutes_from_prev
+            )
             gap = max(0, int((stop.arrival - free_at).total_seconds() // 60))
         previous_departure = stop.departure
 
@@ -98,9 +114,11 @@ def route_view(
                 lat=job.location.lat if job else 0.0,
                 lon=job.location.lon if job else 0.0,
                 past_shift=_minute_of_day(stop.departure, tz) > shift_close,
-                from_label=previous_name,
+                from_label="the shop" if stop.fresh_run else previous_name,
                 next_label=(
-                    names_after[index + 1] if index + 1 < len(names_after) else "back to the shop"
+                    "back to the shop"
+                    if index + 1 >= len(names_after) or route.stops[index + 1].fresh_run
+                    else names_after[index + 1]
                 ),
                 run_note=run_note_for(index),
             )
@@ -387,6 +405,7 @@ def world_view(
                 until_label=clock(ask.until_time.astimezone(tz)),
                 detail=ask.detail,
                 transcript=ask.transcript,
+                crew_size=ask.crew_size,
                 candidates=[
                     {"id": w, "name": world.workers[w].name}
                     for w in ask.candidate_ids

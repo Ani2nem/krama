@@ -361,6 +361,9 @@ class CrewAskSuggestion(Api):
     until: str  # "20:00", for the extension event
     until_label: str  # "8:00 PM", for people
     candidate_ids: list[str] = Field(default_factory=list)
+    #: How many yeses make the hours real - the UI keeps "Book them" dark until
+    #: this many candidates have agreed.
+    crew_size: int = 1
     candidate_names: list[str] = Field(default_factory=list)
 
 
@@ -375,6 +378,7 @@ class CrewAskView(Api):
     candidates: list[dict[str, str]] = Field(default_factory=list)
     #: Candidates who have already said yes (a ShiftExtended exists for that day).
     extended: list[str] = Field(default_factory=list)
+    crew_size: int = 1
 
 
 class AskRequest(Api):
@@ -385,6 +389,7 @@ class AskRequest(Api):
     until: str
     candidate_ids: list[str]
     detail: str = ""
+    crew_size: int = 1
 
 
 class WorkerConfig(Api):

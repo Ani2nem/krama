@@ -254,3 +254,74 @@ def test_every_slot_names_where_its_drive_begins(world, travel, params, business
         assert slot.leg_minutes >= 0 and slot.leg_miles >= 0
     labels = {s.from_label for s in options.slots}
     assert "the shop" in labels or any(label.endswith("'s") for label in labels)
+
+
+# ------------------------------------------------------------------ run breaks
+
+
+def test_a_long_gap_sends_the_crew_home_between_runs(world, travel):
+    """Nobody waits out a four-hour gap at a customer's kerb. A morning job and an
+    evening job on the same crew become two runs: the evening stop departs the
+    shop, and both extra legs - home, and out again - are counted as the real
+    driving they are."""
+    from krama.domain.enums import WindowHardness
+    from krama.domain.models import TimeWindow
+    from krama.scheduler.routing import materialize_route
+
+    morning = world.jobs["j-401"]
+    evening_site = world.jobs["j-402"]
+    evening = evening_site.model_copy(
+        update={
+            "windows": (
+                TimeWindow(
+                    start=_at(0, 17),
+                    end=_at(0, 21),
+                    hardness=WindowHardness.SOFT,
+                ),
+            )
+        }
+    )
+    world.jobs[evening.id] = evening
+
+    route = materialize_route(
+        world=world,
+        travel=travel,
+        crew_id="crew-van-1",
+        worker_ids=("w-dan",),
+        van_id="van-1",
+        on_date=morning.windows[0].start.date(),
+        job_sequence=[morning.id, evening.id],
+        shift_start=_at(0, 8),
+    )
+    first, second = route.stops
+    assert not first.fresh_run
+    assert second.fresh_run, "a 90+ minute kerb wait means the crew went home"
+    assert second.run_break_minutes > 0, "the trip home is real driving"
+    assert second.arrival >= evening.windows[0].start
+
+    # The totals carry every leg: out, between stops is replaced by home+out, home.
+    legs = sum(s.travel_minutes_from_prev + s.run_break_minutes for s in route.stops)
+    assert route.total_travel_minutes == legs + route.return_to_depot_minutes
+
+    # And the plan validator accepts the fresh departure rather than flagging the
+    # depot leg as an impossible drive from the previous customer.
+    from krama.config import BusinessParams
+    from krama.domain.invariants import ValidationConfig, validate_plan
+    from krama.domain.models import PlanVersion
+
+    business = BusinessParams.load()
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(business.meta.timezone)
+    plan = PlanVersion(
+        id="p-test",
+        parent_id=None,
+        created_at=_at(0, 7),
+        horizon_start=route.date,
+        horizon_end=route.date,
+        routes=(route,),
+        unserved=(),
+    )
+    config = ValidationConfig(business_tz=tz)
+    codes = [v.code.value for v in validate_plan(plan, world, travel, config)]
+    assert "travel_time_inconsistent" not in codes
