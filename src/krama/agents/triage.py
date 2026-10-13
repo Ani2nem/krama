@@ -127,6 +127,9 @@ Rules:
   question. "Same time" means each job's own booked time goes in its `at`.
 - A crew LEAVING FOR a job is job-dispatched on that job - driving to work is
   work, never worker-unavailable.
+- "Mark it done" / "they finished" is job-completed. Leave `minutes` empty unless
+  an actual duration was spoken - the booked duration fills in. Never ask how
+  long it took.
 """
 
 
@@ -250,6 +253,39 @@ EXAMPLES: tuple[Example, ...] = (
 )
 
 
+_WEEKDAY_WORDS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _snap_to_spoken_weekday(resolved: date, text: str) -> date:
+    """The dispatcher's weekday outranks the model's calendar arithmetic.
+
+    "Move them back to Monday" came back as 2026-10-11 - a Sunday - and five
+    bookings fell off the horizon. Which date "Monday" is can be fuzzy; that the
+    date IS a Monday is checkable, so it is checked: when the note names exactly
+    one weekday and the resolved date disagrees, snap to the nearest date with
+    that weekday. Two weekdays in one note is genuinely ambiguous - left alone.
+    """
+    lowered = text.lower()
+    named = {d for word, d in _WEEKDAY_WORDS.items() if word in lowered}
+    if len(named) != 1:
+        return resolved
+    wanted = named.pop()
+    if resolved.weekday() == wanted:
+        return resolved
+    ahead = (wanted - resolved.weekday()) % 7
+    behind = ahead - 7
+    shift = ahead if ahead <= -behind else behind
+    return resolved + timedelta(days=shift)
+
+
 def _clock_or(clock: str, fallback: time) -> time:
     try:
         return datetime.strptime(clock, "%H:%M").time()
@@ -360,6 +396,7 @@ def triage(
                     # slot exactly as it would for a fresh booking. A stated time
                     # becomes the usual two-hour arrival window.
                     move_day = date.fromisoformat(item.day) if item.day else on_date
+                    move_day = _snap_to_spoken_weekday(move_day, text)
                     opens = (
                         datetime.combine(move_day, _clock_or(item.at, time(8, 0)), tzinfo=tz)
                         if item.at
@@ -386,6 +423,15 @@ def triage(
                         )
                     )
                     continue
+                minutes = item.minutes
+                if item.kind == "job-completed" and minutes is None:
+                    # "Mark it done" rarely comes with a stopwatch reading. The
+                    # booked duration is the honest default - the dispatcher can
+                    # state the real minutes when they differ, and job-overran
+                    # exists for exactly that.
+                    booked = world.jobs.get(item.target or "")
+                    if booked is not None:
+                        minutes = booked.estimated_duration_min
                 built.append(
                     build_event(
                         item.kind,
@@ -394,7 +440,7 @@ def triage(
                         dispatch_id=dispatch_id,
                         recorded_at=learned,
                         until=moment(item.until) if item.until else None,
-                        minutes=item.minutes,
+                        minutes=minutes,
                         multiplier=item.multiplier,
                         reason=item.reason,
                     )
