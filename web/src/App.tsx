@@ -115,7 +115,23 @@ export default function App() {
     return subscribe(() => void refresh());
   }, [refresh]);
 
-  const days = [...new Set(plan?.routes.map((r) => r.date) ?? [])].sort();
+  // Every day that holds anything - committed routes AND booked-but-unplanned
+  // windows - so the map's day picker never collapses to a lonely "all days"
+  // while the calendar plainly shows work.
+  const days = [
+    ...new Set([
+      ...(plan?.routes.map((r) => r.date) ?? []),
+      ...(world?.jobs ?? [])
+        .filter((j) => j.commitment_state === "confirmed" && j.window_start)
+        .map((j) => j.window_start.slice(0, 10)),
+    ]),
+  ].sort();
+  const dayLabel = (iso: string) =>
+    new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+    });
   const selectedStop =
     plan?.routes.flatMap((r) => r.stops).find((s) => s.job_id === selected) ?? null;
   const selectedJob = world?.jobs.find((j) => j.id === selected) ?? null;
@@ -460,7 +476,9 @@ export default function App() {
               <select value={day ?? ""} onChange={(e) => setDay(e.target.value || null)}>
                 <option value="">all days</option>
                 {days.map((d) => (
-                  <option key={d} value={d}>{d}</option>
+                  <option key={d} value={d}>
+                    {dayLabel(d)}
+                  </option>
                 ))}
               </select>
             )}

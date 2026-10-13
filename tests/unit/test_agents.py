@@ -606,3 +606,42 @@ def test_the_roster_tells_the_model_which_day_each_booking_is(world):
     entries = jobs_line.count("(")
     dated = len(re.findall(r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{4}-", jobs_line))
     assert dated == entries, jobs_line[:300]
+
+
+def test_the_spoken_weekday_outranks_the_models_arithmetic(world):
+    """ "Move them back to Monday" came back dated to a Sunday, and five bookings
+    fell off the horizon. Which date "Monday" is can be fuzzy; that the date IS a
+    Monday is checkable, so it is checked."""
+    from datetime import date as _date
+
+    from krama.agents.triage import _snap_to_spoken_weekday
+
+    sunday = _date(2026, 10, 11)
+    assert _snap_to_spoken_weekday(sunday, "move them back to monday") == _date(2026, 10, 12)
+    # A correct date passes untouched; so does a note naming two weekdays.
+    assert _snap_to_spoken_weekday(_date(2026, 10, 12), "monday please") == _date(2026, 10, 12)
+    assert _snap_to_spoken_weekday(sunday, "monday or tuesday, whatever works") == sunday
+    # Snapping goes to the NEAREST such weekday, forward or back.
+    assert _snap_to_spoken_weekday(_date(2026, 10, 14), "friday") == _date(2026, 10, 16)
+    assert _snap_to_spoken_weekday(_date(2026, 10, 14), "move it to tuesday") == _date(2026, 10, 13)
+
+
+def test_mark_it_done_fills_in_the_booked_duration(world):
+    """ "Mark the Henderson job done" has no stopwatch reading in it, and the old
+    builder refused the event for want of --minutes. The booked duration is the
+    honest default; job-overran exists for when reality differed."""
+    result = run_triage(
+        world,
+        {
+            "events": [{"kind": "job-completed", "target": "j-401"}],
+            "question": "",
+            "summary": "Henderson job done.",
+        },
+        text="mark the henderson job as done",
+    )
+    assert not result.needs_dispatcher, (result.question, result.rejected)
+    from krama.domain.events import JobCompleted
+
+    event = result.events[0]
+    assert isinstance(event, JobCompleted)
+    assert event.actual_duration_min == world.jobs["j-401"].estimated_duration_min
