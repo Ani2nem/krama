@@ -113,7 +113,9 @@ Rules:
   worker-unavailable with the corrected hours. Restoring alone forgets the absence;
   recording alone stacks the new hours on top of the old ones.
 - Times are 24-hour HH:MM. "half ten" is 10:30, "quarter to noon" is 11:45.
-- job-overran needs `minutes`. traffic-delay needs `multiplier`.
+- job-overran needs `minutes`. traffic-delay needs `multiplier` - and a factor
+  said roughly is still a factor: "taking about twice as long" IS traffic-delay
+  with multiplier 2.0, a statement of fact, never a maybe.
 - If no time is given, leave `at` empty. It defaults to now, which is almost always
   what the dispatcher meant, so there is no need to ask.
 - customer-rescheduled: an existing booking moves at the customer's request. Put the

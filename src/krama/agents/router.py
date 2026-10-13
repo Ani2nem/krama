@@ -91,6 +91,15 @@ EXAMPLES: tuple[Example, ...] = (
         ),
         output=NoteRouting(kind="booking", why="A customer with damage wants it fixed."),
     ),
+    # Also misread in the wild: a BULK reschedule ("move all those bookings...")
+    # has no customer, no damage and no address - nothing a booking is made of.
+    Example(
+        text="move all those bookings back to monday at their same times and mark them done",
+        output=NoteRouting(
+            kind="disruption",
+            why="Appointments that already exist are being moved and closed out.",
+        ),
+    ),
     # The case that was misread in the wild: a correction about a FITTER's hours
     # became a customer named Priya wanting a window fitted 11-to-1.
     Example(
