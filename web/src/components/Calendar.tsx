@@ -192,12 +192,16 @@ function Block({
 }) {
   const { stop, route, column, columns } = placed;
   const height = Math.max(26, (stop.end_minute - stop.start_minute) * SCALE);
+  // A visit whose departure is behind the clock is history, not an active
+  // booking - it stays on the board for the record, but dulled, so the eye
+  // reads the day's REMAINING work at a glance.
+  const done = new Date(stop.departure).getTime() < Date.now();
   const width = 100 / columns;
   const crew = route.worker_names.join(" + ");
 
   return (
     <button
-      className={`block block--${stop.commitment_state}${stop.past_shift ? " block--ot" : ""}${selected ? " block--selected" : ""}`}
+      className={`block block--${stop.commitment_state}${stop.past_shift ? " block--ot" : ""}${done ? " block--done" : ""}${selected ? " block--selected" : ""}`}
       style={{
         top: `${(stop.start_minute - top) * SCALE}px`,
         height: `${height}px`,
@@ -214,6 +218,7 @@ function Block({
       }
     >
       {stop.past_shift && <span className="block__ot-tag">OT</span>}
+      {done && <span className="block__done-tag">{"\u2713"} done</span>}
       <span className="block__what">{stop.customer_name}</span>
       {/* The shortest job on the fixture is forty-five minutes, which is fifty pixels
           tall and just holds a wrapped name plus the time. Below that the time goes

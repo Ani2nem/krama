@@ -122,6 +122,11 @@ Rules:
   Tuesday and the planner picks the exact slot, the same way it does for a fresh
   booking. Never ask for a time merely because none was given; ask only when even
   the day is unclear.
+- A bulk move - "move all of Monday's bookings to Tuesday" - is one
+  customer-rescheduled event per job the roster shows on that day, never a
+  question. "Same time" means each job's own booked time goes in its `at`.
+- A crew LEAVING FOR a job is job-dispatched on that job - driving to work is
+  work, never worker-unavailable.
 """
 
 
@@ -157,12 +162,22 @@ class TriageResult:
 
 
 def _roster(world: WorldState) -> str:
-    """The actual ids, so the model picks from a list instead of inventing from memory."""
+    """The actual ids, so the model picks from a list instead of inventing from memory.
+
+    Jobs carry their booked day and time: "move all the Monday bookings" is only
+    answerable when the list says which bookings ARE Monday's - without the dates
+    the model could do nothing but ask, and it did.
+    """
     vans = ", ".join(sorted(world.vans))
     workers = ", ".join(
         f"{w.id} ({w.name})" for w in sorted(world.workers.values(), key=lambda w: w.id)
     )
-    jobs = ", ".join(f"{j.id} ({j.customer_name})" for j in world.active_jobs())
+    jobs = ", ".join(
+        f"{j.id} ({j.customer_name}, "
+        + (f"{j.windows[0].start:%a %Y-%m-%d %H:%M}" if j.windows else "unscheduled")
+        + ")"
+        for j in world.active_jobs()
+    )
     return (
         f"Vans: {vans}\nWorkers: {workers}\nJobs: {jobs}\n"
         f"Event kinds: van-unavailable, van-restored, worker-unavailable, "
@@ -199,6 +214,20 @@ EXAMPLES: tuple[Example, ...] = (
                 ),
             ],
             summary="Priya's absence corrected to 11:00 - 13:00.",
+        ),
+    ),
+    Example(
+        text="rained out - move all of Monday's bookings to Tuesday, same times",
+        output=TriageOutcome(
+            events=[
+                TriagedEvent(
+                    kind="customer-rescheduled", target="j-401", day="2026-01-13", at="09:00"
+                ),
+                TriagedEvent(
+                    kind="customer-rescheduled", target="j-404", day="2026-01-13", at="14:00"
+                ),
+            ],
+            summary="Monday's two bookings move to Tuesday at their own times.",
         ),
     ),
     Example(

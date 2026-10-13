@@ -2481,3 +2481,44 @@ def test_withdrawing_the_yes_breaks_the_plan_visibly(client: TestClient, monkeyp
     assert any("past their overtime reach" in v for v in violations), (
         f"a taken-back yes must break the plan it was holding up: {violations}"
     )
+
+
+def test_last_months_job_does_not_block_this_months_call(client: TestClient, monkeypatch):
+    """Every fixture job shares one phone number and lives in a past week. A
+    repeat customer is the business working - history must not trip the
+    double-booking warning, while a genuinely pending booking still does."""
+    from krama.api.main import _active_duplicates, service
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    world = service().world()
+    assert any(_digits_of(j.phone) == "2065550100" for j in world.active_jobs()), (
+        "the fixture's past-week jobs are still active records"
+    )
+    assert _active_duplicates(world, "206-555-0100", "") == [], (
+        "a visit already behind the clock is history, not a double-booking"
+    )
+
+    monday = _next_monday()
+    draft = {
+        "customer_name": "Repeat caller",
+        "phone": "2065550100",
+        "address": "somewhere new",
+        "service_type": "residential_window_replacement",
+        "duration_minutes": 60,
+        "duration_confidence": 30,
+        "crew_size": 1,
+        "certifications": ["residential_glazing"],
+        "commitment_cost": 0,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    first = client.post("/api/book", json={"draft": draft, "date": monday, "arrival": "09:00"})
+    assert first.status_code == 200, "history did not block the booking"
+
+    second = client.post("/api/book", json={"draft": draft, "date": monday, "arrival": "13:00"})
+    assert second.status_code == 409, "a PENDING booking still trips the gate"
+    assert second.json()["detail"]["error"] == "PossibleDuplicate"
+
+
+def _digits_of(phone: str) -> str:
+    return "".join(ch for ch in phone if ch.isdigit())
