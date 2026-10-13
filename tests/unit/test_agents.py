@@ -589,3 +589,20 @@ def test_a_mis_stamped_past_event_cannot_outrank_a_later_fix():
         if o.from_time.astimezone(tz).date().isoformat() == "2026-10-12"
     ]
     assert spans == [(11, 13)], f"the correction stands, the stale absence stays dead: {spans}"
+
+
+def test_the_roster_tells_the_model_which_day_each_booking_is(world):
+    """ "Move all the Monday bookings" was unanswerable: the job list carried
+    names and ids but no dates, so the model could only ask which bookings
+    Monday's were. The list says now."""
+    from krama.agents.triage import _roster
+
+    listing = _roster(world)
+    assert "Mon 2026-" in listing or "Mon 2025-" in listing, listing[:400]
+    # every active job wears a day name
+    import re
+
+    jobs_line = next(line for line in listing.splitlines() if line.startswith("Jobs:"))
+    entries = jobs_line.count("(")
+    dated = len(re.findall(r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{4}-", jobs_line))
+    assert dated == entries, jobs_line[:300]

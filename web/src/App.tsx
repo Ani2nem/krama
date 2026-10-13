@@ -849,6 +849,9 @@ export default function App() {
             <i className="footer__swatch footer__swatch--confirmed" /> promised to the customer
           </span>
           <span>
+            <i className="footer__swatch footer__swatch--done" /> already done (dulled)
+          </span>
+          <span>
             <i className="footer__swatch footer__swatch--dispatched" /> crew on the way
           </span>
           <span>

@@ -1437,3 +1437,22 @@ button.link:hover:not(:disabled) { color: #6fd6e8; }
   color: #8e2418 !important;
 }
 .rota__editorclose { margin-left: auto; }
+
+/* A visit already behind the clock: kept for the record, dulled for the eye. */
+.block--done {
+  opacity: 0.45;
+  filter: saturate(0.4);
+}
+.block--done:hover { opacity: 0.7; }
+.block__done-tag {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #3c7a46;
+  background: rgb(255 255 255 / 0.75);
+  border-radius: 6px;
+  padding: 0 5px;
+}
+.footer__swatch--done { background: #cfd6cf; opacity: 0.6; }

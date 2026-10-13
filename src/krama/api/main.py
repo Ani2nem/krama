@@ -196,17 +196,26 @@ def _digits(phone: str) -> str:
 
 
 def _active_duplicates(world: WorldState, phone: str, address: str) -> list[Job]:
-    """Active bookings that look like the same caller.
+    """PENDING bookings that look like the same caller.
 
     Deterministic on purpose: "this phone number already has a booking" is a
     checkable fact, so it does not go to a model - and it is only ever a WARNING,
     because a customer with two broken windows is legitimately two jobs. The
     model's opinion would add nothing but a way to be wrong in both directions.
+
+    Pending, not merely active: a visit whose window has already passed is
+    history, not a double-booking - repeat customers are the business working,
+    and last month's job must never block this month's call. (A past job that
+    was genuinely missed shows on the broken-promise strip, which is where
+    "we still owe them" lives.)
     """
     wanted_phone = _digits(phone)
     wanted_address = address.strip().lower()
+    now = datetime.now(service().tz)
     out = []
     for job in world.active_jobs():
+        if job.windows and all(w.end < now for w in job.windows):
+            continue
         same_phone = bool(wanted_phone) and _digits(job.phone) == wanted_phone
         same_address = bool(wanted_address) and job.location.address.strip().lower() == (
             wanted_address
