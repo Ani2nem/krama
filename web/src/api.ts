@@ -32,12 +32,33 @@ export function setOwnerKey(key: string) {
   ownerKey = key;
 }
 
+// Multi-tenant mode: the session token proves who you are; X-Shop is which
+// board an admin is walking right now. Both survive a reload - a dispatcher
+// should not re-login every refresh - and log out wipes them.
+let sessionToken = localStorage.getItem("krama_session") ?? "";
+let adminShop = localStorage.getItem("krama_shop") ?? "";
+export function setSessionToken(token: string) {
+  sessionToken = token;
+  if (token) localStorage.setItem("krama_session", token);
+  else localStorage.removeItem("krama_session");
+}
+export function setAdminShop(shop: string) {
+  adminShop = shop;
+  if (shop) localStorage.setItem("krama_shop", shop);
+  else localStorage.removeItem("krama_shop");
+}
+export function currentAdminShop(): string {
+  return adminShop;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
       ...(ownerKey ? { "X-Owner-Key": ownerKey } : {}),
+      ...(sessionToken ? { "X-Session": sessionToken } : {}),
+      ...(adminShop ? { "X-Shop": adminShop } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -142,6 +163,38 @@ export const api = {
       `/api/jobs/${encodeURIComponent(jobId)}/crew?worker_id=${encodeURIComponent(workerId)}`,
     ),
   session: () => request<{ owner_pin_set: boolean; owner: boolean }>("/api/session"),
+  login: (email: string, password: string) =>
+    post<{ token: string; email: string; role: string; shop_id: string; shop_name: string }>(
+      "/api/auth/login",
+      { email, password },
+    ),
+  join: (token: string, password: string) =>
+    post<{ email: string; status: string }>("/api/auth/join", { token, password }),
+  whoami: () =>
+    request<{ email: string; role: string; shop_id: string; shop_name: string }>(
+      "/api/auth/me",
+    ),
+  shops: () =>
+    request<{ shops: { shop_id: string; name: string; users: number }[] }>("/api/admin/shops"),
+  createShop: (name: string) =>
+    post<{ shop_id: string; name: string }>("/api/admin/shops", { name }),
+  shopUsers: (shopId: string) =>
+    request<{
+      users: { email: string; role: string; shop_id: string; active: boolean }[];
+      invites: { email: string; shop_id: string; role: string; link: string }[];
+    }>(`/api/admin/users?shop_id=${encodeURIComponent(shopId)}`),
+  adminInvite: (email: string, shopId: string, role: string) =>
+    post<{ email: string; link: string; role: string }>("/api/admin/invites", {
+      email,
+      shop_id: shopId,
+      role,
+    }),
+  ownerInvite: (email: string, role: string) =>
+    post<{ email: string; link: string; role: string }>("/api/shop/invites", { email, role }),
+  setUserActive: (email: string, active: boolean) =>
+    post<{ status: string }>(
+      `/api/admin/users/${encodeURIComponent(email)}/active?active=${active}`,
+    ),
   pricing: () =>
     request<{
       fields: { key: string; value: number; source: string; min: number; max: number }[];

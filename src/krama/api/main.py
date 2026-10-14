@@ -21,6 +21,7 @@ import os
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from functools import lru_cache
 from pathlib import Path
@@ -31,10 +32,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from krama.accounts import AccountsError, AccountStore, User
 from krama.agents.intake import _URGENCY_NOT_ARRANGEMENT
 from krama.api import views
 from krama.api.models import (
     AcceptRequest,
+    Api,
     AskRequest,
     BookRequest,
     CrewAskSuggestion,
@@ -147,6 +150,12 @@ def _owner_pin() -> str:
 
 
 def _is_owner(request: Request) -> bool:
+    if auth_enabled():
+        # Who you are decides. The PIN belongs to single-board mode; in
+        # multi-tenant mode a role is the credential - an admin or the shop's
+        # owner sees the money, a dispatcher does not.
+        account = getattr(request.state, "account", None)
+        return account is not None and account.role in ("admin", "owner")
     pin = _owner_pin()
     if not pin:
         return True
@@ -244,7 +253,12 @@ def notifier() -> Notifier:
 
 
 def service() -> DispatchService:
-    workspace = Workspace(os.environ.get("KRAMA_WORKSPACE", ".krama"))
+    shop = _active_shop.get()
+    if auth_enabled() and shop:
+        # Every shop is its own workspace - its own event log, plans, world.
+        workspace = Workspace(shops_dir() / shop)
+    else:
+        workspace = Workspace(os.environ.get("KRAMA_WORKSPACE", ".krama"))
     mode = TravelMode(os.environ.get("KRAMA_TRAVEL", TravelMode.AUTO.value))
     return DispatchService(workspace, BusinessParams.load(), mode)
 
@@ -364,6 +378,87 @@ async def require_api_key(request: Request, call_next: Any) -> Any:
                 "remedy": "send it as X-API-Key, or as Authorization: Bearer <key>",
             },
         )
+    return await call_next(request)
+
+
+# ------------------------------------------------------------------ shops & users
+#
+# Multi-tenant mode. A SHOP is a business running its own board, and a shop is
+# exactly one workspace - the isolation boundary the event log already provides.
+# OFF unless KRAMA_AUTH=on: a laptop board and the whole test suite keep today's
+# single-workspace behaviour with zero ceremony. Turned on, every /api call must
+# carry a session token; who you are decides which workspace you see and whether
+# the money is stripped - the same owner/dispatcher split the PIN implemented,
+# now per person instead of per secret.
+
+
+def auth_enabled() -> bool:
+    return os.environ.get("KRAMA_AUTH", "").lower() == "on"
+
+
+def shops_dir() -> Path:
+    return Path(os.environ.get("KRAMA_SHOPS", "shops"))
+
+
+def accounts_store() -> AccountStore:
+    return AccountStore.load(
+        Path(os.environ.get("KRAMA_ACCOUNTS", ""))
+        if os.environ.get("KRAMA_ACCOUNTS")
+        else shops_dir() / "accounts.json"
+    )
+
+
+#: The shop whose workspace this request works against, set by the auth
+#: middleware. A contextvar rather than a parameter because service() is called
+#: from forty handlers and every one of them would otherwise need to thread it.
+_active_shop: ContextVar[str | None] = ContextVar("active_shop", default=None)
+
+_AUTH_OPEN_PATHS = frozenset({"/api/health", "/api/ready", "/api/auth/login", "/api/auth/join"})
+
+
+@app.middleware("http")
+async def require_account(request: Request, call_next: Any) -> Any:
+    """In multi-tenant mode, every API call belongs to somebody and some shop."""
+    path = request.url.path
+    if not auth_enabled() or path in _AUTH_OPEN_PATHS or not path.startswith("/api/"):
+        _active_shop.set(None)
+        request.state.account = None
+        return await call_next(request)
+
+    bearer = request.headers.get("x-session", "") or (
+        request.headers.get("authorization", "")[7:]
+        if request.headers.get("authorization", "").lower().startswith("bearer ")
+        else ""
+    )
+    store = accounts_store()
+    user = store.verify_token(bearer) if bearer else None
+    if user is None:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": "SignedOut",
+                "detail": "sign in to use this board",
+                "remedy": "log in; sessions last 36 hours",
+            },
+        )
+
+    shop = user.shop_id
+    if user.role == "admin":
+        # The admin walks every shop; the X-Shop header says which one right now.
+        shop = request.headers.get("x-shop", "")
+        if not shop and path.startswith("/api/admin/"):
+            shop = ""  # admin surface needs no shop
+        elif shop not in store.shops and not path.startswith("/api/admin/"):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "NoShopChosen",
+                    "detail": "pick which shop's board to open",
+                    "remedy": "send X-Shop: <shop id> - the admin panel lists them",
+                },
+            )
+    request.state.account = user
+    _active_shop.set(shop or None)
     return await call_next(request)
 
 
@@ -1685,6 +1780,205 @@ def configure_van(request: VanConfig) -> dict[str, str]:
         )
         broadcaster.publish("world", {"event": "van_registered"})
         return {"van_id": van_id, "status": "saved"}
+
+
+class LoginRequest(Api):
+    email: str
+    password: str
+
+
+class JoinRequest(Api):
+    token: str
+    password: str
+
+
+class ShopRequest(Api):
+    name: str
+
+
+class InviteRequest(Api):
+    email: str
+    shop_id: str = ""
+    role: str = "dispatcher"
+
+
+def _require_account(request: Request, *roles: str) -> User:
+    account: User | None = getattr(request.state, "account", None)
+    if account is None or (roles and account.role not in roles):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "NotAllowed",
+                "detail": "your account cannot do that",
+                "remedy": "ask the platform admin" if "admin" in roles else "ask your shop's owner",
+            },
+        )
+    return account
+
+
+@app.post("/api/auth/login")
+def login(request: LoginRequest) -> dict[str, object]:
+    """Sign in. The very first login can bootstrap the platform admin.
+
+    A brand-new deployment has no accounts at all; whoever presents the
+    KRAMA_ADMIN_EMAIL / KRAMA_ADMIN_PASSWORD pair from the environment becomes
+    the admin, once. After that the store is the only authority.
+    """
+    if not auth_enabled():
+        raise HTTPException(
+            404, detail={"error": "AuthOff", "detail": "this board runs in single-shop mode"}
+        )
+    store = accounts_store()
+    if not store.users:
+        boot_email = os.environ.get("KRAMA_ADMIN_EMAIL", "").strip().lower()
+        boot_password = os.environ.get("KRAMA_ADMIN_PASSWORD", "")
+        if (
+            boot_email
+            and boot_password
+            and request.email.strip().lower() == boot_email
+            and secrets.compare_digest(request.password, boot_password)
+        ):
+            store.create_user(boot_email, boot_password, "admin", "")
+    user = store.authenticate(request.email, request.password)
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "BadLogin",
+                "detail": "that email and password do not match an active account",
+                "remedy": "check for typos, or ask for a fresh invite",
+            },
+        )
+    shop = store.shops.get(user.shop_id)
+    return {
+        "token": store.issue_token(user),
+        "email": user.email,
+        "role": user.role,
+        "shop_id": user.shop_id,
+        "shop_name": shop.name if shop else "",
+    }
+
+
+@app.post("/api/auth/join")
+def join(request: JoinRequest) -> dict[str, str]:
+    """An invited email sets its password and the account goes live."""
+    if not auth_enabled():
+        raise HTTPException(
+            404, detail={"error": "AuthOff", "detail": "this board runs in single-shop mode"}
+        )
+    store = accounts_store()
+    try:
+        user = store.accept_invite(request.token, request.password)
+    except AccountsError as exc:
+        raise _fail(exc, 400) from exc
+    return {"email": user.email, "status": "account created - sign in"}
+
+
+@app.get("/api/auth/me")
+def whoami(request: Request) -> dict[str, object]:
+    account = _require_account(request)
+    store = accounts_store()
+    shop = store.shops.get(account.shop_id)
+    return {
+        "email": account.email,
+        "role": account.role,
+        "shop_id": account.shop_id,
+        "shop_name": shop.name if shop else "",
+    }
+
+
+@app.get("/api/admin/shops")
+def list_shops(request: Request) -> dict[str, list[dict[str, object]]]:
+    _require_account(request, "admin")
+    store = accounts_store()
+    return {
+        "shops": [
+            {
+                "shop_id": shop.shop_id,
+                "name": shop.name,
+                "users": sum(1 for u in store.users.values() if u.shop_id == shop.shop_id),
+            }
+            for shop in sorted(store.shops.values(), key=lambda s: s.name.lower())
+        ]
+    }
+
+
+@app.post("/api/admin/shops")
+def create_shop(request: Request, body: ShopRequest) -> dict[str, str]:
+    _require_account(request, "admin")
+    store = accounts_store()
+    try:
+        shop = store.create_shop(body.name)
+    except AccountsError as exc:
+        raise _fail(exc, 400) from exc
+    # A shop is born with its workspace, so its board works on first open.
+    workspace = Workspace(shops_dir() / shop.shop_id)
+    if not workspace.events.read():
+        from krama.fixtures.sample_business import seed_events
+
+        workspace.seed(seed_events())
+    return {"shop_id": shop.shop_id, "name": shop.name}
+
+
+@app.get("/api/admin/users")
+def list_users(request: Request, shop_id: str = Query(default="")) -> dict[str, object]:
+    _require_account(request, "admin")
+    store = accounts_store()
+    users = [
+        {"email": u.email, "role": u.role, "shop_id": u.shop_id, "active": u.active}
+        for u in sorted(store.users.values(), key=lambda u: u.email)
+        if not shop_id or u.shop_id == shop_id
+    ]
+    invites = [
+        {"email": i.email, "shop_id": i.shop_id, "role": i.role, "link": f"/#join={i.token}"}
+        for i in store.invites.values()
+        if not shop_id or i.shop_id == shop_id
+    ]
+    return {"users": users, "invites": invites}
+
+
+@app.post("/api/admin/invites")
+def admin_invite(request: Request, body: InviteRequest) -> dict[str, str]:
+    """Mint an invite link. Shown, not emailed - handing it over is the admin's
+    job until an email service is configured, and a link you watched someone
+    receive beats a silent delivery failure."""
+    _require_account(request, "admin")
+    store = accounts_store()
+    role = body.role if body.role in ("owner", "dispatcher") else "dispatcher"
+    try:
+        invite = store.invite(body.email, body.shop_id, role)  # type: ignore[arg-type]
+    except AccountsError as exc:
+        raise _fail(exc, 400) from exc
+    return {"email": invite.email, "link": f"/#join={invite.token}", "role": role}
+
+
+@app.post("/api/admin/users/{email}/active")
+def set_user_active(request: Request, email: str, active: bool = Query(...)) -> dict[str, str]:
+    _require_account(request, "admin")
+    store = accounts_store()
+    try:
+        store.set_active(email, active)
+    except AccountsError as exc:
+        raise _fail(exc, 400) from exc
+    return {"email": email, "status": "active" if active else "deactivated"}
+
+
+@app.post("/api/shop/invites")
+def owner_invite(request: Request, body: InviteRequest) -> dict[str, str]:
+    """A shop's owner grows their own team - the "three accounts under him" case.
+
+    Owners invite into THEIR shop only, and only dispatcher or owner seats;
+    whatever shop_id the request names is ignored on purpose.
+    """
+    account = _require_account(request, "owner", "admin")
+    shop_id = account.shop_id or request.headers.get("x-shop", "")
+    store = accounts_store()
+    role = body.role if body.role in ("owner", "dispatcher") else "dispatcher"
+    try:
+        invite = store.invite(body.email, shop_id, role)  # type: ignore[arg-type]
+    except AccountsError as exc:
+        raise _fail(exc, 400) from exc
+    return {"email": invite.email, "link": f"/#join={invite.token}", "role": role}
 
 
 @app.get("/api/session")
