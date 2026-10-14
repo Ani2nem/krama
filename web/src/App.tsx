@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, api, setOwnerKey, subscribe } from "./api";
+import { ApiError, api, setOwnerKey, subscribe, setSessionToken, setAdminShop, currentAdminShop } from "./api";
 import { Calendar } from "./components/Calendar";
 import { Logo } from "./components/Logo";
+import { AdminPanel, JoinCard, LoginCard } from "./components/Portal";
 import { NotePanel } from "./components/NotePanel";
 import { ConfigPanel } from "./components/ConfigPanel";
 import { TodayPanel } from "./components/TodayPanel";
@@ -52,6 +53,19 @@ export default function App() {
   } | null>(null);
   const [configuring, setConfiguring] = useState(false);
   const [rotaStart, setRotaStart] = useState<string | null>(null);
+  // Multi-tenant mode: who is signed in (null on a laptop board), whether the
+  // server demanded a login, and an invite token arriving via /#join=...
+  const [account, setAccount] = useState<{
+    email: string;
+    role: string;
+    shop_id: string;
+    shop_name: string;
+  } | null>(null);
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [joinToken, setJoinToken] = useState(
+    () => new URLSearchParams(window.location.hash.replace(/^#/, "")).get("join") ?? "",
+  );
+  const [adminOpen, setAdminOpen] = useState(false);
   const [session, setSession] = useState<{ owner_pin_set: boolean; owner: boolean } | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const detailRef = useRef<HTMLDivElement>(null);
@@ -104,9 +118,21 @@ export default function App() {
       setWeek(nextWeek);
       setSession(nextSession);
       setError(null);
+      setNeedsLogin(false);
+      if (!account) {
+        // Signed in (or auth is off) - learn who, quietly. 403 means auth off.
+        void api.whoami().then(setAccount).catch(() => setAccount(null));
+      }
     } catch (exc) {
-      setError(exc as ApiError);
+      const failure = exc as ApiError;
+      if (failure.status === 401 && failure.code !== "BadLogin") {
+        // The deployment wants a login before anything else renders.
+        setNeedsLogin(true);
+        return;
+      }
+      setError(failure);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rotaStart]);
 
   useEffect(() => {
@@ -164,6 +190,32 @@ export default function App() {
           })
       : [];
 
+  if (joinToken) {
+    return (
+      <JoinCard
+        token={joinToken}
+        onJoined={() => {
+          window.location.hash = "";
+          setJoinToken("");
+          setNeedsLogin(true);
+        }}
+      />
+    );
+  }
+  if (needsLogin) {
+    return (
+      <LoginCard
+        onSignedIn={(who) => {
+          setSessionToken(who.token);
+          setAccount(who);
+          setNeedsLogin(false);
+          if (who.role === "admin" && !currentAdminShop()) setAdminOpen(true);
+          void refresh();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -217,11 +269,42 @@ export default function App() {
               Owner · lock
             </button>
           )}
+          {account && account.role === "admin" && (
+            <button disabled={busy} onClick={() => setAdminOpen(true)}>
+              Shops
+            </button>
+          )}
           <button disabled={busy} onClick={() => setConfiguring(true)}>
             Configure
           </button>
+          {account && (
+            <span className="whoami" title={`${account.email} · ${account.role}`}>
+              {account.role === "admin"
+                ? "admin"
+                : account.shop_name || account.shop_id}
+              <button
+                className="whoami__out"
+                title="sign out"
+                onClick={() => {
+                  setSessionToken("");
+                  setAdminShop("");
+                  setAccount(null);
+                  setNeedsLogin(true);
+                }}
+              >
+                sign out
+              </button>
+            </span>
+          )}
         </div>
       </header>
+
+      {adminOpen && (
+        <AdminPanel
+          onClose={() => setAdminOpen(false)}
+          onShopChosen={() => void refresh()}
+        />
+      )}
 
       {plan && !plan.feasible && (
         /* "1 violation(s)" is a true statement that tells a dispatcher nothing. What

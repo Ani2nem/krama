@@ -1,0 +1,29 @@
+{
+  "secret": "f91ca88b24ba8963eb34d092d1c7b86f035a9eca346e402f7e42dba5515544fc",
+  "shops": [
+    {
+      "shop_id": "glass-guru",
+      "name": "Glass Guru",
+      "created_at": 1791949393.004674
+    }
+  ],
+  "users": [
+    {
+      "email": "ani2nem@gmail.com",
+      "role": "admin",
+      "shop_id": "",
+      "salt": "ac8739907cdd970f496ca933fadbe58a",
+      "password_hash": "051bd14f30403723501506d3f37830cefeac9ceba43e273907c7ddcff5ba31f08b8006c8f86441a623263929503d4e13f512cee3f20f802b74894b6e3797a680",
+      "active": true
+    },
+    {
+      "email": "guru@example.com",
+      "role": "owner",
+      "shop_id": "glass-guru",
+      "salt": "eb35bd5d77ca2a468db8cd4b1586cc5a",
+      "password_hash": "4966b2e1b7c9c00be3f6a72e08c65d00a04b9d95e7c241e9c892da7cf2308b23037699402fb92a5c1f6216b26ca1e4c91496d1ea65473e54f5fd49a7d9668f74",
+      "active": true
+    }
+  ],
+  "invites": []
+}
