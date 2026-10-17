@@ -29,7 +29,7 @@ from krama.api.models import (
 from krama.config import BusinessParams, calibration_banner
 from krama.domain.autonomy import AutonomyDecision
 from krama.domain.diff import PlanDiff
-from krama.domain.enums import NOT_A_FAILURE
+from krama.domain.enums import NOT_A_FAILURE, CommitmentState
 from krama.domain.invariants import Violation
 from krama.domain.models import CostBreakdown, CrewRoute, Job, PlanVersion, Worker
 from krama.domain.state import Unavailability, WorldState
@@ -394,7 +394,11 @@ def world_view(
                 lon=j.location.lon,
                 transcript=j.provenance.transcript,
             )
-            for j in world.active_jobs()
+            # Completed work stays readable - the done tile on the calendar is a
+            # record, and clicking it must still say who, where, and for how
+            # much. Only a CANCELLED booking vanishes: it never happened.
+            for j in sorted(world.jobs.values(), key=lambda j: j.id)
+            if j.commitment_state is not CommitmentState.CANCELLED
         ],
         crew_asks=[
             CrewAskView(

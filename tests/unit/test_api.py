@@ -2522,3 +2522,55 @@ def test_last_months_job_does_not_block_this_months_call(client: TestClient, mon
 
 def _digits_of(phone: str) -> str:
     return "".join(ch for ch in phone if ch.isdigit())
+
+
+def test_a_finished_job_keeps_its_story(client: TestClient, monkeypatch):
+    """Coming back days later, the done tile still answers who, where, and for
+    how much. Completed work used to drop out of the world view entirely - the
+    card drew from the plan and found dashes. Only a CANCELLED booking vanishes:
+    it never happened."""
+
+    monkeypatch.setenv("KRAMA_TRAVEL", "synthetic")
+    monday = _next_monday()
+    draft = {
+        "customer_name": "Finished caller",
+        "phone": "9137770000",
+        "address": "11 Done St",
+        "service_type": "residential_window_replacement",
+        "duration_minutes": 60,
+        "duration_confidence": 30,
+        "crew_size": 1,
+        "certifications": ["residential_glazing"],
+        "commitment_cost": 0,
+        "lat": 32.99,
+        "lon": -97.36,
+    }
+    booked = client.post(
+        "/api/book",
+        json={"draft": draft, "date": monday, "arrival": "09:00", "quoted_total": 450.0},
+    ).json()
+    job_id = booked["job_id"]
+
+    client.post(
+        "/api/events",
+        json={"kind": "job-completed", "target": job_id, "minutes": 60},
+    )
+    record = next((j for j in client.get("/api/world").json()["jobs"] if j["id"] == job_id), None)
+    assert record is not None, "a completed visit stays on the record"
+    assert record["commitment_state"] == "completed"
+    assert record["phone"] == "9137770000"
+    assert record["address"] == "11 Done St"
+    assert record["quoted_total"] == 450.0
+
+    # Cancelled stays gone - the existing promise of take_back_out holds.
+    second = client.post(
+        "/api/book",
+        json={
+            "draft": {**draft, "customer_name": "Changed mind", "phone": "9137770001"},
+            "date": monday,
+            "arrival": "13:00",
+        },
+    ).json()
+    client.post(f"/api/jobs/{second['job_id']}/cancel")
+    gone = [j["id"] for j in client.get("/api/world").json()["jobs"]]
+    assert second["job_id"] not in gone
