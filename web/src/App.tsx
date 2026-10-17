@@ -158,6 +158,8 @@ export default function App() {
       day: "numeric",
       month: "short",
     });
+  const stopIsHistory = (stop: { commitment_state: string }) =>
+    stop.commitment_state === "completed" || stop.commitment_state === "cancelled";
   const selectedStop =
     plan?.routes.flatMap((r) => r.stops).find((s) => s.job_id === selected) ?? null;
   const selectedJob = world?.jobs.find((j) => j.id === selected) ?? null;
@@ -830,6 +832,17 @@ export default function App() {
                   )}
 
                   <div className="jobcard__actions">
+                    {stopIsHistory(selectedStop) ? (
+                      /* A completed visit is a record. There is nothing left to
+                         edit or cancel - only the call to re-read. */
+                      <button
+                        className="jobcard__quiet"
+                        onClick={() => setShowTranscript((v) => !v)}
+                      >
+                        {showTranscript ? "Hide the call" : "Show the call"}
+                      </button>
+                    ) : (
+                    <>
                     <button
                       className="jobcard__primary"
                       disabled={busy}
@@ -872,6 +885,8 @@ export default function App() {
                         Cancel this booking
                       </button>
                     </span>
+                    </>
+                    )}
                   </div>
                 </div>
               )}
